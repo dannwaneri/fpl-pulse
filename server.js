@@ -3,6 +3,7 @@ const cluster = require('cluster');
 const os = require('os');
 const express = require('express');
 const WebSocket = require('ws');
+const path = require('path');
 const cors = require('cors');
 const mongoose = require('mongoose');
 const fplRoutes = require('./routes/fplRoutes');
@@ -42,6 +43,10 @@ if (cluster.isMaster) {
   // Error handling middleware (after routes)
  // app.use(notFoundHandler); // 404 handler
   //app.use(errorHandler);    // General error handler
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, 'client/build/index.html'));
+  });
+
 
   // Start server
   const server = app.listen(PORT, () => {
