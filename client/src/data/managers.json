@@ -1,0 +1,22 @@
+[
+    { "id": 1, "name": "Mikel Arteta", "team_id": 1, "cost": 15 },      
+    { "id": 2, "name": "Pep Guardiola", "team_id": 2, "cost": 20 },    
+    { "id": 3, "name": "Andoni Iraola", "team_id": 3, "cost": 12 },    
+    { "id": 4, "name": "Thomas Frank", "team_id": 4, "cost": 13 },      
+    { "id": 5, "name": "Graham Potter", "team_id": 5, "cost": 14 },     
+    { "id": 6, "name": "Enzo Maresca", "team_id": 6, "cost": 16 },     
+    { "id": 7, "name": "Oliver Glasner", "team_id": 7, "cost": 11 },    
+    { "id": 8, "name": "Sean Dyche", "team_id": 8, "cost": 10 },        
+    { "id": 9, "name": "Marco Silva", "team_id": 9, "cost": 12 },      
+    { "id": 10, "name": "Gary O'Neil", "team_id": 10, "cost": 11 },     
+    { "id": 11, "name": "Kieran McKenna", "team_id": 11, "cost": 13 },  
+    { "id": 12, "name": "Russell Martin", "team_id": 12, "cost": 12 },  
+    { "id": 13, "name": "Arne Slot", "team_id": 13, "cost": 18 },       
+    { "id": 14, "name": "Erik ten Hag", "team_id": 14, "cost": 15 },    
+    { "id": 15, "name": "Eddie Howe", "team_id": 15, "cost": 14 },     
+    { "id": 16, "name": "Steve Cooper", "team_id": 16, "cost": 12 },   
+    { "id": 17, "name": "Ange Postecoglou", "team_id": 17, "cost": 15 }, 
+    { "id": 18, "name": "Julen Lopetegui", "team_id": 18, "cost": 13 }, 
+    { "id": 19, "name": "Vincent Kompany", "team_id": 19, "cost": 14 }, 
+    { "id": 20, "name": "Unai Emery", "team_id": 20, "cost": 16 }       
+  ]
