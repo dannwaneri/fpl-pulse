@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, memo } from 'react';
+import { getApiUrl } from '../utils/apiConfig';
 
 const Top10kStats = memo(({ gameweek, isLoading, userPicks, activeChip }) => {
   const [stats, setStats] = useState(null);
@@ -81,7 +82,7 @@ const Top10kStats = memo(({ gameweek, isLoading, userPicks, activeChip }) => {
       }
       
       // If no cache or forcing refresh, fetch from API
-      const data = await fetchWithRetry(`http://localhost:5000/api/fpl/top10k/${gameweek}${forceRefresh ? '?refresh=true' : ''}`);
+      const data = await fetchWithRetry(getApiUrl(`/api/fpl/top10k/${gameweek}${forceRefresh ? '?refresh=true' : ''}`));
       
       setLoadingStage('Processing top managers');
       setStats(data);

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'react-toastify';
+import { getApiUrl } from '../utils/apiConfig';
 
 const WhatIfRankSimulator = ({ 
   fplId, 
@@ -53,7 +54,7 @@ const WhatIfRankSimulator = ({
     setIsLoading(true);
     try {
       const totalAdditionalPoints = calculateTotalSimulatedPoints();
-      const response = await fetch(`http://localhost:5000/api/fpl/${fplId}/rank-simulator/${gameweek}?points=${totalAdditionalPoints}`);
+      const response = await fetch(getApiUrl(`/api/fpl/${fplId}/rank-simulator/${gameweek}?points=${totalAdditionalPoints}`));
       
       if (!response.ok) {
         throw new Error('Failed to simulate rank');

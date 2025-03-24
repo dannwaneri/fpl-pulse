@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback, useReducer } from 'react';
+import { getApiUrl, WS_BASE_URL } from '../utils/apiConfig';
 
 // Action types
 const ACTIONS = {
@@ -146,7 +147,7 @@ const useFplData = () => {
     
     try {
       console.log(`Fetching league for leagueId: ${leagueId}, GW: ${gameweek}`);
-      const response = await fetch(`http://localhost:5000/api/league/${leagueId}/live/${gameweek}`);
+      const response = await fetch(getApiUrl(`/api/league/${leagueId}/live/${gameweek}/`));
       
       if (!response.ok) {
         const errorText = await response.text();
@@ -247,7 +248,7 @@ const useFplData = () => {
       dispatch({ type: ACTIONS.SET_LAST_UPDATED, payload: new Date() });
       
       if (!liveRank || isNaN(liveRank)) {
-        const newLiveRank = await fetch(`http://localhost:5000/api/fpl/${fplId}/rank-simulator/${data.currentGameweek}?points=0`)
+        const newLiveRank = await fetch(getApiUrl(`/api/fpl/${fplId}/rank-simulator/${data.currentGameweek}?points=0`))
           .then(res => res.json())
           .then(data => data.simulatedRank || 0);
         console.log('Calculated liveRank:', newLiveRank);
@@ -269,7 +270,7 @@ const useFplData = () => {
       const gameweek = data.currentGameweek;
       console.log(`Refreshing live data for ID ${fplId}, gameweek ${gameweek}`);
       
-      const picksResponse = await fetch(`http://localhost:5000/api/fpl/${fplId}/picks/${gameweek}`);
+      const picksResponse = await fetch(getApiUrl(`/api/fpl/${fplId}/picks/${gameweek}`));
       const picksResult = await picksResponse.json();
       
       if (picksResponse.ok) {
@@ -329,7 +330,7 @@ const useFplData = () => {
       const gameweek = data.currentGameweek;
       console.log(`Polling for live data: fplId=${fplId}, gameweek=${gameweek}`);
       
-      const picksResponse = await fetch(`http://localhost:5000/api/fpl/${fplId}/picks/${gameweek}`);
+      const picksResponse = await fetch(getApiUrl(`/api/fpl/${fplId}/picks/${gameweek}`));
       if (!picksResponse.ok) {
         throw new Error('Failed to fetch picks data');
       }
@@ -353,7 +354,7 @@ const useFplData = () => {
       });
       
       if (top10kStats) {
-        const top10kResponse = await fetch(`http://localhost:5000/api/fpl/top10k/${gameweek}`);
+        const top10kResponse = await fetch(getApiUrl(`/api/fpl/top10k/${gameweek}`));
         if (top10kResponse.ok) {
           const top10kResult = await top10kResponse.json();
           dispatch({ type: ACTIONS.UPDATE_TOP10K_DATA, payload: top10kResult });
@@ -382,7 +383,7 @@ const useFplData = () => {
     dispatch({ type: ACTIONS.RESET_DATA });
 
     try {
-      const managerResponse = await fetch(`http://localhost:5000/api/fpl/${fplId}`);
+      const managerResponse = await fetch(getApiUrl(`/api/fpl/${fplId}`));
       const managerResult = await managerResponse.json();
       console.log('1. Fetched manager data:', JSON.stringify(managerResult, null, 2));
       
@@ -411,7 +412,7 @@ const useFplData = () => {
       let top10kData = null;
 
       try {
-        const picksResponse = await fetch(`http://localhost:5000/api/fpl/${fplId}/picks/${gameweek}`);
+        const picksResponse = await fetch(getApiUrl(`/api/fpl/${fplId}/picks/${gameweek}`));
         const picksResult = await picksResponse.json();
         if (picksResponse.ok) {
           picksData = {
@@ -434,7 +435,7 @@ const useFplData = () => {
       }
 
       try {
-        const plannerResponse = await fetch(`http://localhost:5000/api/fpl/${fplId}/planner`);
+        const plannerResponse = await fetch(getApiUrl(`/api/fpl/${fplId}/planner`));
         const plannerResult = await plannerResponse.json();
         if (plannerResponse.ok) {
           plannerData = plannerResult;
@@ -446,8 +447,8 @@ const useFplData = () => {
       }
 
       try {
-        const top10kResponse = await fetch(`http://localhost:5000/api/fpl/top10k/${gameweek}`);
-        const top10kResult = await top10kResponse.json();
+      const top10kResponse = await fetch(getApiUrl(`/api/fpl/top10k/${gameweek}`));    
+      const top10kResult = await top10kResponse.json();
         if (top10kResponse.ok) {
           top10kData = top10kResult;
         } else {
@@ -538,8 +539,8 @@ const useFplData = () => {
       return;
     }
 
-    console.log('Attempting WebSocket connection to ws://localhost:5000');
-    ws.current = new WebSocket('ws://localhost:5000');
+   // console.log('Attempting WebSocket connection to ws://localhost:5000');
+    ws.current = new WebSocket(WS_BASE_URL());
 
     ws.current.onopen = () => {
       console.log('WebSocket connected successfully');
@@ -620,7 +621,7 @@ const useFplData = () => {
     dispatch({ type: ACTIONS.SET_LOADING, payload: true });
     
     try {
-      const response = await fetch(`http://localhost:5000/api/fpl/${fplId}/assistant-manager/${data.currentGameweek}`, {
+      const response = await fetch(getApiUrl(`/api/fpl/${fplId}/assistant-manager/${data.currentGameweek}`), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -653,7 +654,7 @@ const useFplData = () => {
     dispatch({ type: ACTIONS.SET_LOADING, payload: true });
     
     try {
-      const response = await fetch(`http://localhost:5000/api/fpl/${fplId}/assistant-manager/${data.currentGameweek}`, {
+      const response = await fetch(getApiUrl(`/api/fpl/${fplId}/assistant-manager/${data.currentGameweek}`), {
         method: 'DELETE'
       });
       

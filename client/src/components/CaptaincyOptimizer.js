@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { getApiUrl } from '../utils/apiConfig';
 
 const CaptaincyOptimizer = ({ fplId, gameweek, activeChip }) => {
   const [suggestions, setSuggestions] = useState([]);
@@ -84,10 +85,11 @@ const CaptaincyOptimizer = ({ fplId, gameweek, activeChip }) => {
       
       try {
         // Fetch both captaincy suggestions and top10k data in parallel
-        const [suggestionsData, top10kData] = await Promise.all([
-          fetchWithRetry(`http://localhost:5000/api/fpl/${fplId}/captaincy/${gameweek}${activeChip ? `?chip=${activeChip}` : ''}`),
-          cachedTop10k || fetchWithRetry(`http://localhost:5000/api/fpl/top10k/${gameweek}`)
-        ]);
+        // Updated code
+const [suggestionsData, top10kData] = await Promise.all([
+  fetchWithRetry(getApiUrl(`/api/fpl/${fplId}/captaincy/${gameweek}${activeChip ? `?chip=${activeChip}` : ''}`)),
+  cachedTop10k || fetchWithRetry(getApiUrl(`/api/fpl/top10k/${gameweek}`))
+]);
         
         // Validate and cross-check EO values
         const validatedSuggestions = suggestionsData.map(player => ({
