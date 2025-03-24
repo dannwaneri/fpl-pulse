@@ -10,6 +10,7 @@ const fplRoutes = require('./routes/fplRoutes');
 const leagueRoutes = require('./routes/leagueRoutes');
 const { reconnectWithBackoff } = require('./config/db'); // Updated to use db.js
 const { setupWebSocket } = require('./services/websocketService');
+const { createProxyMiddleware } = require('http-proxy-middleware');
 //const { errorHandler, notFoundHandler } = require('./errorHandler');
 
 const numCPUs = os.cpus().length; // Number of CPU cores for clustering
@@ -34,12 +35,21 @@ if (cluster.isMaster) {
 
   // Middleware
   app.use(cors({
-    origin: process.env.NODE_ENV === 'production' 
-      ? ['https://fpl-pulse.onrender.com', 'your-other-domain.com'] 
-      : 'http://localhost:3000',
+    origin: ['https://fpl-pulse.onrender.com', 'http://localhost:3000'],
     credentials: true
   }));
   app.use(express.json());
+
+
+
+  // Use before your routes
+  app.use('/api/external', createProxyMiddleware({
+    target: 'https://fantasy.premierleague.com',
+    changeOrigin: true,
+    pathRewrite: {
+      '^/api/external': '/api'
+    }
+  }));
 
   // Routes
   app.use('/api/fpl', fplRoutes);
@@ -48,10 +58,13 @@ if (cluster.isMaster) {
   // Error handling middleware (after routes)
  // app.use(notFoundHandler); // 404 handler
   //app.use(errorHandler);    // General error handler
-  app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, 'client/build/index.html'));
-  });
-
+  if (process.env.NODE_ENV === 'production') {
+    app.use(express.static(path.join(__dirname, 'client/build')));
+  
+    app.get('*', function(req, res) {
+      res.sendFile(path.join(__dirname, 'client/build', 'index.html'));
+    });
+  }
 
   // Start server
   const server = app.listen(PORT, () => {

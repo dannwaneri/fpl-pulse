@@ -26,7 +26,13 @@ const loadBootstrapData = async (retries = 3, initialDelayMs = 1000) => {
       try {
         const response = await axios.get('https://fantasy.premierleague.com/api/bootstrap-static/', {
           timeout: 30000,
-          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Origin': 'https://fantasy.premierleague.com',
+            'Referer': 'https://fantasy.premierleague.com/'
+          }
         });
         bootstrapData = response.data;
         logger.info('API response received', { status: response.status, elementCount: bootstrapData.elements?.length || 0 });
