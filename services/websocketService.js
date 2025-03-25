@@ -11,7 +11,9 @@ const setupWebSocket = (wss) => {
 
   const fetchLiveData = async (gameweek) => {
     try {
-      const response = await axios.get(`https://fantasy.premierleague.com/api/event/${gameweek}/live/`, { timeout: 10000 });
+      const response = await axios.get(`/fpl-proxy/event/${gameweek}/live/`, { 
+        timeout: 10000 
+      });
       const newData = response.data.elements;
 
       if (JSON.stringify(newData) !== JSON.stringify(global.liveDataCache[gameweek])) {
@@ -125,15 +127,8 @@ const setupWebSocket = (wss) => {
 
   const initializeGameweek = async () => {
     try {
-      const bootstrap = await fetchWithRetry('https://fantasy.premierleague.com/api/bootstrap-static/', {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'application/json, text/plain, */*',
-          'Accept-Language': 'en-US,en;q=0.9',
-          'Origin': 'https://fantasy.premierleague.com',
-          'Referer': 'https://fantasy.premierleague.com/'
-        }
-      });
+      // Use your own proxy instead of direct FPL API access
+      const bootstrap = await axios.get('/fpl-proxy/bootstrap-static/');
       currentGameweek = bootstrap.data.events.find(e => e.is_current)?.id || 1;
       fetchLiveData(currentGameweek);
       setInterval(() => fetchLiveData(currentGameweek), 60000);
@@ -145,9 +140,13 @@ const setupWebSocket = (wss) => {
         data: err.response?.data,
         headers: err.response?.headers
       });
+      // Notify clients of the error
       subscriptions.forEach((_, client) => {
         if (client.readyState === WebSocket.OPEN) {
-          client.send(JSON.stringify({ type: 'error', message: 'Failed to initialize WebSocket' }));
+          client.send(JSON.stringify({ 
+            type: 'error', 
+            message: 'Failed to initialize game data. Please try again later.'
+          }));
         }
       });
     }

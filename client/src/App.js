@@ -62,6 +62,14 @@ const threats = top10kStats?.top10k?.eoBreakdown
     <div className="min-h-screen bg-gray-100 flex flex-col items-center py-8 px-4 font-sans">
       <Header />
       <div className="w-full max-w-4xl">
+        {/* Add this to display loading/error state */}
+        <div className="bg-white p-6 rounded-lg shadow-md mb-4 text-center">
+          <h2 className="text-xl font-bold mb-2">FPL Pulse Status</h2>
+          <p className="text-gray-700">
+            {isLoading ? 'Loading data...' : error ? `Error: ${error}` : 'Ready to load your team!'}
+          </p>
+        </div>
+        
         <div className="flex flex-col sm:flex-row gap-4 mb-6">
           <input
             type="text"

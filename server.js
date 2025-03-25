@@ -43,15 +43,30 @@ if (cluster.isMaster) {
 
 
   // Use before your routes
-  app.use('/fpl-api', createProxyMiddleware({
+  app.use('/fpl-proxy', createProxyMiddleware({
     target: 'https://fantasy.premierleague.com',
     changeOrigin: true,
     pathRewrite: {
-      '^/fpl-api': '/api'
+      '^/fpl-proxy': '/api'
     },
     onProxyReq: (proxyReq) => {
-      proxyReq.setHeader('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+      // Set more realistic browser headers
+      proxyReq.setHeader('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
+      proxyReq.setHeader('Accept', 'application/json, text/plain, */*');
+      proxyReq.setHeader('Accept-Language', 'en-US,en;q=0.9');
       proxyReq.setHeader('Referer', 'https://fantasy.premierleague.com/');
+      proxyReq.setHeader('X-Requested-With', 'XMLHttpRequest');
+      proxyReq.setHeader('sec-ch-ua', '"Chromium";v="122", "Google Chrome";v="122", "Not:A-Brand";v="99"');
+      proxyReq.setHeader('sec-ch-ua-mobile', '?0');
+      proxyReq.setHeader('sec-ch-ua-platform', '"Windows"');
+      proxyReq.setHeader('Sec-Fetch-Site', 'same-origin');
+      proxyReq.setHeader('Sec-Fetch-Mode', 'cors');
+      proxyReq.setHeader('Sec-Fetch-Dest', 'empty');
+    },
+    // Handle proxy errors
+    onError: (err, req, res) => {
+      console.error('Proxy error:', err);
+      res.status(500).json({ error: 'Proxy error', message: err.message });
     }
   }));
 
