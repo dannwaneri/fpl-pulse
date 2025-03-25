@@ -108,24 +108,10 @@ const setupWebSocket = (wss) => {
   };
 
 
-  const fetchWithRetry = async (url, options = {}, maxRetries = 5) => {
-    let retries = 0;
-    while (retries < maxRetries) {
-      try {
-        return await axios.get(url, options);
-      } catch (error) {
-        if (retries === maxRetries - 1) throw error;
-        
-        const delay = Math.pow(2, retries) * 1000;
-        console.log(`Retrying in ${delay}ms...`);
-        await new Promise(resolve => setTimeout(resolve, delay));
-        retries++;
-      }
-    }
-  };
 
 
-  const initializeGameweek = async () => {
+
+  const initializeGameweek = async () => { 
     try {
       // Use your own proxy instead of direct FPL API access
       const bootstrap = await axios.get('/fpl-proxy/bootstrap-static/');
