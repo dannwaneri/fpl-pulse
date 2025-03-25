@@ -43,11 +43,15 @@ if (cluster.isMaster) {
 
 
   // Use before your routes
-  app.use('/api/external', createProxyMiddleware({
+  app.use('/fpl-api', createProxyMiddleware({
     target: 'https://fantasy.premierleague.com',
     changeOrigin: true,
     pathRewrite: {
-      '^/api/external': '/api'
+      '^/fpl-api': '/api'
+    },
+    onProxyReq: (proxyReq) => {
+      proxyReq.setHeader('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+      proxyReq.setHeader('Referer', 'https://fantasy.premierleague.com/');
     }
   }));
 

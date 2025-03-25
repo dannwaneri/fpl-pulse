@@ -105,14 +105,46 @@ const setupWebSocket = (wss) => {
     }
   };
 
+
+  const fetchWithRetry = async (url, options = {}, maxRetries = 5) => {
+    let retries = 0;
+    while (retries < maxRetries) {
+      try {
+        return await axios.get(url, options);
+      } catch (error) {
+        if (retries === maxRetries - 1) throw error;
+        
+        const delay = Math.pow(2, retries) * 1000;
+        console.log(`Retrying in ${delay}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        retries++;
+      }
+    }
+  };
+
+
   const initializeGameweek = async () => {
     try {
-      const bootstrap = await axios.get('https://fantasy.premierleague.com/api/bootstrap-static/');
+      const bootstrap = await fetchWithRetry('https://fantasy.premierleague.com/api/bootstrap-static/', {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'application/json, text/plain, */*',
+          'Accept-Language': 'en-US,en;q=0.9',
+          'Origin': 'https://fantasy.premierleague.com',
+          'Referer': 'https://fantasy.premierleague.com/'
+        }
+      });
       currentGameweek = bootstrap.data.events.find(e => e.is_current)?.id || 1;
       fetchLiveData(currentGameweek);
       setInterval(() => fetchLiveData(currentGameweek), 60000);
     } catch (err) {
-      console.error('Failed to initialize gameweek:', err.message);
+      console.error('Failed to initialize gameweek:', {
+        message: err.message,
+        status: err.response?.status,
+        statusText: err.response?.statusText,
+        data: err.response?.data,
+        headers: err.response?.headers
+      });
       subscriptions.forEach((_, client) => {
         if (client.readyState === WebSocket.OPEN) {
           client.send(JSON.stringify({ type: 'error', message: 'Failed to initialize WebSocket' }));
