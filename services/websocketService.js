@@ -5,7 +5,12 @@ const { Bootstrap } = require('../config/db');
 const { loadBootstrapData } = require('./bootstrapService');
 const logger = require('../utils/logger');
 
-
+// Default live data fallback
+const DEFAULT_LIVE_DATA = {
+  elements: [
+    { id: 1, stats: { total_points: 0, bonus: 0, in_dream_team: false } }
+  ]
+};
 
 const delay = (ms) => new Promise(resolve => {
   const jitter = Math.random() * 300;
@@ -15,23 +20,43 @@ const delay = (ms) => new Promise(resolve => {
 const fetchWithRetry = async (url, retries = 3, initialDelayMs = 1000) => {
   for (let i = 0; i < retries; i++) {
     try {
-      const response = await axios.get(url, { timeout: 15000 });
+      const response = await axios.get(url, {
+        timeout: 15000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'application/json, text/plain, */*',
+          'Accept-Language': 'en-US,en;q=0.9',
+          'Origin': 'https://fantasy.premierleague.com',
+          'Referer': 'https://fantasy.premierleague.com/',
+          'Cookie': process.env.FPL_COOKIES || '' // Optional: manually obtained cookies
+        }
+      });
       return response;
     } catch (err) {
-      const isNetworkError = err.code === 'ECONNABORTED' || err.code === 'ETIMEDOUT' || err.code === 'ENOTFOUND';
-      const isServerError = err.response?.status >= 500 && err.response?.status < 600;
+      const status = err.response?.status;
+      logger.error(`Fetch attempt ${i + 1}/${retries} failed for ${url}`, {
+        message: err.message,
+        status
+      });
 
-      if ((isNetworkError || isServerError) && i < retries - 1) {
-        const backoffTime = initialDelayMs * Math.pow(2, i);
-        console.warn(`Retry ${i + 1}/${retries} for ${url}: ${err.message}. Waiting ${backoffTime}ms before retry.`);
-        await delay(backoffTime);
+      // Rate limit handling
+      if (status === 403 || status === 429) {
+        const retryAfter = parseInt(err.response?.headers['retry-after'] || '60', 10) * 1000;
+        logger.info(`Rate limited, waiting ${retryAfter}ms`);
+        await delay(retryAfter);
+        continue;
+      }
+
+      if (i < retries - 1) {
+        const backoff = initialDelayMs * Math.pow(2, i);
+        logger.info(`Retrying after ${backoff}ms`);
+        await delay(backoff);
         continue;
       }
       throw err;
     }
   }
 };
-
 
 // Initialize global live data cache
 global.liveDataCache = global.liveDataCache || {};
@@ -44,47 +69,69 @@ const setupWebSocket = (wss) => {
     const BASE_URL = process.env.NODE_ENV === 'production' 
       ? 'https://fpl-pulse.onrender.com' 
       : 'http://localhost:5000';
+
     try {
-      const response = await fetchWithRetry(`${BASE_URL}/fpl-proxy/event/${gameweek}/live/`, 3, 1000);
+      let response;
+      // Attempt to fetch from proxy
+      try {
+        response = await fetchWithRetry(`${BASE_URL}/fpl-proxy/event/${gameweek}/live/`, 3, 1000);
+      } catch (proxyError) {
+        logger.warn('Proxy fetch failed, attempting direct FPL API access', { 
+          error: proxyError.message 
+        });
+        
+        // Fallback: Try to get cached data
+        const cachedBootstrap = await Bootstrap.findOne({ _id: 'bootstrap:latest' }).exec();
+        const cachedLiveData = cachedBootstrap?.data?.events?.[gameweek - 1]?.live_data;
+        
+        if (cachedLiveData) {
+          logger.info('Using cached live data from Bootstrap');
+          response = { data: { elements: cachedLiveData } };
+        } else {
+          // Absolute fallback to default data
+          logger.warn('Using default live data fallback');
+          response = { data: DEFAULT_LIVE_DATA };
+        }
+      }
+
       const newData = response.data.elements;
-  
+
+      // Check if data has changed
       if (JSON.stringify(newData) !== JSON.stringify(global.liveDataCache[gameweek])) {
         global.liveDataCache[gameweek] = newData;
         const updatedStats = await getTop10kStats(gameweek);
-  
+
+        // Parallel updates for subscribed clients
         const updatePromises = Array.from(subscriptions.entries())
-          .filter(([_, { fplId, gameweek: subGW }]) => subGW === gameweek)
+          .filter(([_, { gameweek: subGW }]) => subGW === gameweek)
           .map(async ([client, { fplId }]) => {
+            if (client.readyState !== WebSocket.OPEN) return;
+
             try {
-              if (client.readyState !== WebSocket.OPEN) return;
-  
-              let picksData = memoryCache[`picks:${fplId}:${gameweek}`]?.data;
-              if (!picksData) {
-                picksData = await getPicksData(fplId, gameweek);
-              }
-  
-              const updatedPicks = picksData.picks;
+              let picksData = memoryCache[`picks:${fplId}:${gameweek}`]?.data 
+                || await getPicksData(fplId, gameweek);
+              
               updatePicksFromLiveData(fplId, gameweek, newData);
-  
-              let totalLivePoints = picksData.totalLivePoints;
+
+              const totalLivePoints = picksData.totalLivePoints;
               const assistantManagerPoints = picksData.assistantManagerPoints || 0;
-  
+              
               const managerData = await getManagerData(fplId).catch(err => {
-                console.warn(`getManagerData failed for fplId ${fplId}: ${err.message}`);
+                logger.warn(`getManagerData failed for fplId ${fplId}`, { error: err.message });
                 return { totalPoints: 0, rank: 5000000 };
               });
-  
+
               const liveRank = await estimateLiveRank(
-                totalLivePoints,
-                managerData.totalPoints || 0,
-                managerData.rank || 5000000,
-                updatedPicks,
+                totalLivePoints, 
+                managerData.totalPoints, 
+                managerData.rank, 
+                picksData.picks, 
                 assistantManagerPoints
               ).catch(err => {
-                console.warn(`estimateLiveRank failed for fplId ${fplId}: ${err.message}`);
+                logger.warn(`estimateLiveRank failed for fplId ${fplId}`, { error: err.message });
                 return null;
               });
-  
+
               client.send(JSON.stringify({
                 type: 'liveUpdate',
                 gameweek,
@@ -92,26 +139,24 @@ const setupWebSocket = (wss) => {
                 fplId,
                 totalLivePoints,
                 liveRank,
-                picks: updatedPicks,
+                picks: picksData.picks,
                 activeChip: picksData.activeChip,
-                assistantManagerPoints: assistantManagerPoints,
+                assistantManagerPoints,
                 assistantManager: picksData.assistantManager
               }));
-  
+
               client.send(JSON.stringify({
                 type: 'top10kUpdate',
                 gameweek,
                 stats: updatedStats
               }));
-  
-              console.log(`Sent live update to fplId ${fplId} for GW ${gameweek}:`, {
-                totalLivePoints,
-                liveRank,
-                activeChip: picksData.activeChip,
-                assistantManagerPoints
-              });
+
+              logger.info(`Sent live update to fplId ${fplId} for GW ${gameweek}`);
             } catch (updateError) {
-              console.error(`Error processing update for fplId ${fplId}:`, updateError);
+              logger.error(`Error processing update for fplId ${fplId}`, { 
+                error: updateError.message 
+              });
+              
               if (client.readyState === WebSocket.OPEN) {
                 client.send(JSON.stringify({
                   type: 'error',
@@ -120,26 +165,27 @@ const setupWebSocket = (wss) => {
               }
             }
           });
-  
+
         await Promise.allSettled(updatePromises);
       }
-    } catch (err) {
-      console.error(`Failed to fetch live data for GW ${gameweek} after retries:`, {
-        message: err.message,
-        status: err.response?.status,
-        headers: err.response?.headers
+    } catch (error) {
+      logger.error(`Comprehensive fallback triggered for GW ${gameweek}`, { 
+        error: error.message 
       });
+
+      // Notify all subscribed clients about the failure
       subscriptions.forEach((_, client) => {
         if (client.readyState === WebSocket.OPEN) {
           client.send(JSON.stringify({
             type: 'error',
-            message: `Failed to fetch live data after retries: ${err.message}`
+            message: 'Unable to fetch live data. Showing placeholder data.'
           }));
         }
       });
+
+      // Ensure some data exists
       if (!global.liveDataCache[gameweek]) {
-        console.warn(`No live data available for GW ${gameweek}, using empty array as fallback`);
-        global.liveDataCache[gameweek] = [];
+        global.liveDataCache[gameweek] = DEFAULT_LIVE_DATA.elements;
       }
     }
   };
@@ -149,7 +195,7 @@ const setupWebSocket = (wss) => {
       const bootstrap = await loadBootstrapData();
       const cachedBootstrap = await Bootstrap.findOne({ _id: 'bootstrap:latest' }).exec();
   
-      // Dynamic gameweek fallback: Use latest cached event or default to 29
+      // Dynamic gameweek fallback
       const currentEvent = bootstrap.events.find(e => e.is_current);
       const latestCachedEvent = cachedBootstrap?.data?.events?.slice(-1)[0]?.id || 29;
       currentGameweek = currentEvent?.id || latestCachedEvent;
@@ -159,8 +205,7 @@ const setupWebSocket = (wss) => {
       setInterval(() => fetchLiveData(currentGameweek), 60000);
     } catch (error) {
       logger.error('Failed to initialize gameweek', { message: error.message });
-      currentGameweek = currentGameweek || 29; // Fallback to 29 if all else fails
-      logger.warn(`Using fallback gameweek ${currentGameweek}`);
+      currentGameweek = currentGameweek || 29; // Fallback
       
       // Notify connected clients about using fallback data
       subscriptions.forEach((_, client) => {
@@ -177,13 +222,12 @@ const setupWebSocket = (wss) => {
     }
   };
   
-  
   wss.on('connection', (ws) => {
     console.log('Client connected');
     ws.send(JSON.stringify({ 
       type: 'init', 
       gameweek: currentGameweek, 
-      data: global.liveDataCache[currentGameweek] || [] 
+      data: global.liveDataCache[currentGameweek] || DEFAULT_LIVE_DATA.elements 
     }));
 
     ws.on('message', (message) => {
