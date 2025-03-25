@@ -1,6 +1,9 @@
 const axios = require('axios');
 const { updatePicksFromLiveData, getTop10kStats, memoryCache, estimateLiveRank, getPicksData, getManagerData } = require('./fplService');
 const WebSocket = require('ws');
+const { loadBootstrapData } = require('./bootstrapService');
+
+
 
 // Initialize global live data cache
 global.liveDataCache = global.liveDataCache || {};
@@ -10,8 +13,12 @@ const setupWebSocket = (wss) => {
   const subscriptions = new Map();
 
   const fetchLiveData = async (gameweek) => {
+    // Define BASE_URL
+    const BASE_URL = process.env.NODE_ENV === 'production' 
+      ? 'https://fpl-pulse.onrender.com' 
+      : 'http://localhost:5000';
     try {
-      const response = await axios.get(`/fpl-proxy/event/${gameweek}/live/`, { 
+      const response = await axios.get(`${BASE_URL}/fpl-proxy/event/${gameweek}/live/`, { 
         timeout: 10000 
       });
       const newData = response.data.elements;
@@ -109,35 +116,115 @@ const setupWebSocket = (wss) => {
 
 
 
-
-
-  const initializeGameweek = async () => { 
+  const initializeGameweek = async () => {
+    // Define BASE_URL
+    const BASE_URL = process.env.NODE_ENV === 'production' 
+      ? 'https://fpl-pulse.onrender.com' 
+      : 'http://localhost:5000';
+  
     try {
-      // Use your own proxy instead of direct FPL API access
-      const bootstrap = await axios.get('/fpl-proxy/bootstrap-static/');
-      currentGameweek = bootstrap.data.events.find(e => e.is_current)?.id || 1;
+      let bootstrap;
+      let dataSource = 'api';
+      
+      try {
+        // Try to fetch from API first
+        console.log('Trying to fetch bootstrap data from API...');
+        const response = await axios.get(`${BASE_URL}/fpl-proxy/bootstrap-static/`, {
+          timeout: 15000,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json',
+            'Origin': 'https://fantasy.premierleague.com',
+            'Referer': 'https://fantasy.premierleague.com/'
+          }
+        });
+        
+        // Check response type and content
+        const contentType = response.headers['content-type'] || '';
+        console.log('API response content type:', contentType);
+        
+        // If response is HTML instead of JSON, reject it
+        if (contentType.includes('text/html') || 
+            (typeof response.data === 'string' && response.data.includes('<!DOCTYPE html>'))) {
+          console.warn('Received HTML instead of JSON, rejecting response');
+          throw new Error('HTML response received instead of JSON');
+        }
+        
+        bootstrap = response;
+        
+        // Check if the data has the expected structure
+        if (!bootstrap.data || !bootstrap.data.events || !Array.isArray(bootstrap.data.events)) {
+          console.warn('API response missing expected structure, falling back to cache');
+          throw new Error('Invalid data structure from API');
+        }
+      } catch (apiError) {
+        // Enhanced error logging for API errors
+        console.error('API request failed:', {
+          message: apiError.message,
+          response: apiError.response ? {
+            status: apiError.response.status,
+            contentType: apiError.response.headers['content-type'],
+            dataType: typeof apiError.response.data,
+            dataSample: typeof apiError.response.data === 'string' 
+              ? apiError.response.data.substring(0, 200) + '...' 
+              : JSON.stringify(apiError.response.data).substring(0, 200) + '...'
+          } : 'No response received'
+        });
+        
+        // Fall back to cached data
+        console.log('Falling back to cached bootstrap data');
+        dataSource = 'cache';
+        try {
+          const cachedBootstrap = await loadBootstrapData();
+          bootstrap = { data: cachedBootstrap };
+        } catch (cacheError) {
+          console.error('Cache retrieval failed:', cacheError.message);
+          // Let it proceed to the hardcoded fallback
+          dataSource = 'hardcoded';
+        }
+      }
+      
+      // Use hardcoded gameweek if needed
+      if (dataSource === 'hardcoded' || !bootstrap?.data?.events || !Array.isArray(bootstrap.data.events)) {
+        console.warn('Using hardcoded gameweek due to data issues');
+        currentGameweek = 29; // Update this to current gameweek
+      } else {
+        const currentEvent = bootstrap.data.events.find(e => e.is_current);
+        console.log('Current event found:', currentEvent ? 
+          { id: currentEvent.id, is_current: currentEvent.is_current } : 'None');
+        currentGameweek = currentEvent?.id || 29; // Fallback to hardcoded value if not found
+      }
+      
+      console.log(`Using gameweek: ${currentGameweek} (source: ${dataSource})`);
       fetchLiveData(currentGameweek);
       setInterval(() => fetchLiveData(currentGameweek), 60000);
     } catch (err) {
-      console.error('Failed to initialize gameweek:', {
+      // Final fallback - enhanced error logging
+      console.error('Ultimate fallback triggered:', {
         message: err.message,
-        status: err.response?.status,
-        statusText: err.response?.statusText,
-        data: err.response?.data,
-        headers: err.response?.headers
+        stack: err.stack
       });
-      // Notify clients of the error
+      
+      // Hard-coded fallback as last resort
+      console.log('Using hard-coded fallback gameweek');
+      currentGameweek = 29; // Update this to current gameweek
+      
+      fetchLiveData(currentGameweek);
+      setInterval(() => fetchLiveData(currentGameweek), 60000);
+      
+      // Notify connected clients
       subscriptions.forEach((_, client) => {
         if (client.readyState === WebSocket.OPEN) {
           client.send(JSON.stringify({ 
             type: 'error', 
-            message: 'Failed to initialize game data. Please try again later.'
+            message: 'Using fallback data. Some features may be limited.'
           }));
         }
       });
     }
   };
-
+  
+  
   wss.on('connection', (ws) => {
     console.log('Client connected');
     ws.send(JSON.stringify({ 
