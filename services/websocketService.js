@@ -23,7 +23,6 @@ const delay = (ms) => new Promise(resolve => {
 });
 
 const fetchWithRetry = async (url, retries = 3, initialDelayMs = 1000) => {
-const fetchWithRetry = async (url, retries = 3, initialDelayMs = 1000) => {
   for (let i = 0; i < retries; i++) {
     try {
       const response = await axios.get(url, {
