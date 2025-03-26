@@ -23,17 +23,23 @@ const delay = (ms) => new Promise(resolve => {
 });
 
 const fetchWithRetry = async (url, retries = 3, initialDelayMs = 1000) => {
+const fetchWithRetry = async (url, retries = 3, initialDelayMs = 1000) => {
   for (let i = 0; i < retries; i++) {
     try {
       const response = await axios.get(url, {
         timeout: 15000,
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'application/json, text/plain, */*',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+          'Accept': '*/*',
+          'Accept-Encoding': 'gzip, deflate, br',
           'Accept-Language': 'en-US,en;q=0.9',
+          'Connection': 'keep-alive',
           'Origin': 'https://fantasy.premierleague.com',
-          'Referer': 'https://fantasy.premierleague.com/',
-          'Cookie': process.env.FPL_COOKIES || '' // Optional: manually obtained cookies
+          'Referer': 'https://fantasy.premierleague.com/api/',
+          'Sec-Fetch-Dest': 'empty',
+          'Sec-Fetch-Mode': 'cors',
+          'Sec-Fetch-Site': 'same-origin',
+          'Cookie': process.env.FPL_COOKIES || '' // Preserve optional cookies
         }
       });
       return response;
