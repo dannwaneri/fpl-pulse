@@ -22,46 +22,48 @@ const delay = (ms) => new Promise(resolve => {
   setTimeout(resolve, ms + jitter);
 });
 
-const fetchWithRetry = async (url, retries = 3, initialDelayMs = 1000) => {
+async function fetchWithRetry(url, retries, delayMs) {
   for (let i = 0; i < retries; i++) {
     try {
       const response = await axios.get(url, {
         timeout: 15000,
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'application/json, text/plain, */*',
+          'User-Agent': 'Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Mobile Safari/537.36',
+          'Accept': 'application/json',
+          'Accept-Encoding': 'gzip, deflate, br, zstd',
           'Accept-Language': 'en-US,en;q=0.9',
-          'Origin': 'https://fantasy.premierleague.com',
-          'Referer': 'https://fantasy.premierleague.com/',
-          'Cookie': process.env.FPL_COOKIES || '' // Optional: manually obtained cookies
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache',
+          'Sec-Ch-Ua': '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"',
+          'Sec-Ch-Ua-Mobile': '?1',
+          'Sec-Ch-Ua-Platform': '"Android"',
+          'Sec-Fetch-Dest': 'empty',
+          'Sec-Fetch-Mode': 'cors',
+          'Sec-Fetch-Site': 'cross-site',
+          'Cookie': process.env.FPL_COOKIE || ''
         }
       });
       return response;
     } catch (err) {
       const status = err.response?.status;
       logger.error(`Fetch attempt ${i + 1}/${retries} failed for ${url}`, {
-        message: err.message,
-        status
+        status,
+        headers: err.response?.headers,
+        body: err.response?.data ? JSON.stringify(err.response.data).slice(0, 200) : 'No body'
       });
-
-      // Rate limit handling - check both 403 and 429
-      if ((status === 403 || status === 429) && err.response?.headers['retry-after']) {
-        const retryAfter = Math.max(parseInt(err.response.headers['retry-after'] || '60', 10) * 1000, 1000);
-        logger.info(`Rate limited, waiting ${retryAfter}ms`);
+      if (status === 403 || status === 429) {
+        const retryAfter = err.response?.headers['retry-after'] 
+          ? Math.max(parseInt(err.response.headers['retry-after'], 10) * 1000, 1000)
+          : 60000;
+        logger.info(`Rate limited or forbidden, waiting ${retryAfter}ms`);
         await delay(retryAfter);
         continue;
       }
-
-      if (i < retries - 1) {
-        const backoff = initialDelayMs * Math.pow(2, i);
-        logger.info(`Retrying after ${backoff}ms`);
-        await delay(backoff);
-        continue;
-      }
-      throw err;
+      if (i === retries - 1) throw err;
+      await delay(delayMs);
     }
   }
-};
+}
 
 const fetchLiveData = async (gameweek) => {
   const BASE_URL = process.env.NODE_ENV === 'production' 
