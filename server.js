@@ -103,6 +103,7 @@ const setupWorker = () => {
   // Set up the FPL API proxy with improved headers and error handling
  // Set up the FPL API proxy with improved headers and error handling
  app.use('/fpl-proxy', createProxyMiddleware({
+ app.use('/fpl-proxy', createProxyMiddleware({
   target: 'https://fantasy.premierleague.com',
   changeOrigin: true,
   pathRewrite: { '^/fpl-proxy': '/api' },
@@ -110,7 +111,8 @@ const setupWorker = () => {
     const userAgents = [
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
     ];
     
     // Explicitly set cookies from environment variables if available
@@ -121,34 +123,39 @@ const setupWorker = () => {
     proxyReq.setHeader('User-Agent', userAgents[Math.floor(Math.random() * userAgents.length)]);
     proxyReq.setHeader('Accept', 'application/json, text/plain, */*');
     proxyReq.setHeader('Accept-Language', 'en-US,en;q=0.9');
+    proxyReq.setHeader('Accept-Encoding', 'gzip, deflate, br');
+    proxyReq.setHeader('Connection', 'keep-alive');
     proxyReq.setHeader('Origin', 'https://fantasy.premierleague.com');
-    proxyReq.setHeader('Referer', 'https://fantasy.premierleague.com/');
+    proxyReq.setHeader('Referer', 'https://fantasy.premierleague.com/api/');
+    proxyReq.setHeader('Sec-Fetch-Dest', 'empty');
+    proxyReq.setHeader('Sec-Fetch-Mode', 'cors');
+    proxyReq.setHeader('Sec-Fetch-Site', 'same-origin');
   },
-    onProxyRes: (proxyRes, req) => {
-      const contentType = proxyRes.headers['content-type'] || '';
-      if (contentType.includes('text/html')) {
-        logger.warn('FPL API returned HTML instead of JSON', {
-          path: req.path,
-          contentType
-        });
-      }
-      
-      // Handle rate limiting
-      if (proxyRes.statusCode === 429) {
-        logger.warn('Rate limited by FPL API', {
-          path: req.path,
-          retryAfter: proxyRes.headers['retry-after']
-        });
-      }
-    },
-    onError: (err, req) => {
-      logger.error('Proxy error:', { 
-        message: err.message, 
+  onProxyRes: (proxyRes, req) => {
+    const contentType = proxyRes.headers['content-type'] || '';
+    if (contentType.includes('text/html')) {
+      logger.warn('FPL API returned HTML instead of JSON', {
         path: req.path,
-        code: err.code
+        contentType
       });
     }
-  }));
+    
+    // Handle rate limiting
+    if (proxyRes.statusCode === 429) {
+      logger.warn('Rate limited by FPL API', {
+        path: req.path,
+        retryAfter: proxyRes.headers['retry-after']
+      });
+    }
+  },
+  onError: (err, req) => {
+    logger.error('Proxy error:', { 
+      message: err.message, 
+      path: req.path,
+      code: err.code
+    });
+  }
+}));
 
   // API Routes
   app.use('/api/fpl', fplRoutes);
