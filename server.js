@@ -101,9 +101,7 @@ const setupWorker = () => {
   };
 
   // Set up the FPL API proxy with improved headers and error handling
- // Set up the FPL API proxy with improved headers and error handling
- app.use('/fpl-proxy', createProxyMiddleware({
- app.use('/fpl-proxy', createProxyMiddleware({
+app.use('/fpl-proxy', createProxyMiddleware({
   target: 'https://fantasy.premierleague.com',
   changeOrigin: true,
   pathRewrite: { '^/fpl-proxy': '/api' },
