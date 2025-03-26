@@ -28,12 +28,19 @@ async function fetchWithRetry(url, retries, delayMs) {
       const response = await axios.get(url, {
         timeout: 15000,
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'application/json, text/plain, */*',
+          'User-Agent': 'Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Mobile Safari/537.36',
+          'Accept': 'application/json',
+          'Accept-Encoding': 'gzip, deflate, br, zstd',
           'Accept-Language': 'en-US,en;q=0.9',
-          'Origin': 'https://fantasy.premierleague.com',
-          'Referer': 'https://fantasy.premierleague.com/',
-          'Cookie': process.env.FPL_COOKIES || '' // Optional: manually obtained cookies
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache',
+          'Sec-Ch-Ua': '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"',
+          'Sec-Ch-Ua-Mobile': '?1',
+          'Sec-Ch-Ua-Platform': '"Android"',
+          'Sec-Fetch-Dest': 'empty',
+          'Sec-Fetch-Mode': 'cors',
+          'Sec-Fetch-Site': 'cross-site',
+          'Cookie': process.env.FPL_COOKIE || ''
         }
       });
       return response;
@@ -57,6 +64,7 @@ async function fetchWithRetry(url, retries, delayMs) {
     }
   }
 }
+
 
 const fetchLiveData = async (gameweek) => {
   const BASE_URL = process.env.NODE_ENV === 'production' 
