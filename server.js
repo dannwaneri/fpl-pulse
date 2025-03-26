@@ -100,33 +100,55 @@ const setupWorker = () => {
     }
   };
 
-
-app.use('/fpl-proxy', createProxyMiddleware({
+  // Set up the FPL API proxy with improved headers and error handling
+ // Set up the FPL API proxy with improved headers and error handling
+ app.use('/fpl-proxy', createProxyMiddleware({
   target: 'https://fantasy.premierleague.com',
   changeOrigin: true,
   pathRewrite: { '^/fpl-proxy': '/api' },
   onProxyReq: (proxyReq) => {
-    if (process.env.FPL_COOKIE) {
-      proxyReq.setHeader('Cookie', process.env.FPL_COOKIE);
+    const userAgents = [
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    ];
+    
+    // Explicitly set cookies from environment variables if available
+    if (process.env.FPL_COOKIES) {
+      proxyReq.setHeader('Cookie', process.env.FPL_COOKIES);
     }
-    proxyReq.setHeader('User-Agent', 'Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Mobile Safari/537.36');
-    proxyReq.setHeader('Accept', 'application/json');
-    proxyReq.setHeader('Accept-Encoding', 'gzip, deflate, br, zstd');
+    
+    proxyReq.setHeader('User-Agent', userAgents[Math.floor(Math.random() * userAgents.length)]);
+    proxyReq.setHeader('Accept', 'application/json, text/plain, */*');
     proxyReq.setHeader('Accept-Language', 'en-US,en;q=0.9');
-    proxyReq.setHeader('Cache-Control', 'no-cache');
-    proxyReq.setHeader('Pragma', 'no-cache');
-    proxyReq.setHeader('Sec-Ch-Ua', '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"');
-    proxyReq.setHeader('Sec-Ch-Ua-Mobile', '?1');
-    proxyReq.setHeader('Sec-Ch-Ua-Platform', '"Android"');
-    proxyReq.setHeader('Sec-Fetch-Dest', 'empty');
-    proxyReq.setHeader('Sec-Fetch-Mode', 'cors');
-    proxyReq.setHeader('Sec-Fetch-Site', 'cross-site');
+    proxyReq.setHeader('Origin', 'https://fantasy.premierleague.com');
+    proxyReq.setHeader('Referer', 'https://fantasy.premierleague.com/');
   },
-  onError: (err, req, res) => {
-    logger.error('Proxy error:', { message: err.message, path: req.path });
-    res.status(500).send('Proxy error');
-  }
-}));
+    onProxyRes: (proxyRes, req) => {
+      const contentType = proxyRes.headers['content-type'] || '';
+      if (contentType.includes('text/html')) {
+        logger.warn('FPL API returned HTML instead of JSON', {
+          path: req.path,
+          contentType
+        });
+      }
+      
+      // Handle rate limiting
+      if (proxyRes.statusCode === 429) {
+        logger.warn('Rate limited by FPL API', {
+          path: req.path,
+          retryAfter: proxyRes.headers['retry-after']
+        });
+      }
+    },
+    onError: (err, req) => {
+      logger.error('Proxy error:', { 
+        message: err.message, 
+        path: req.path,
+        code: err.code
+      });
+    }
+  }));
 
 // API Routes
   app.use('/api/fpl', fplRoutes);
