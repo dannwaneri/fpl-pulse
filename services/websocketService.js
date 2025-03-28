@@ -73,47 +73,54 @@ const fetchLiveData = async (gameweek) => {
 
   try {
     let response;
-    // Attempt to fetch from proxy
     try {
       response = await fetchWithRetry(`${BASE_URL}/fpl-proxy/event/${gameweek}/live/`, 3, 1000);
+      console.log('Live Response:', response.data);
       
-      // Validate response and data exist
-      if (!response || !response.data) {
-        throw new Error('Invalid or empty response received');
+      // Check if response is JSON
+      if (!response || !response.data || typeof response.data !== 'object') {
+        throw new Error('Invalid response: Expected JSON, got ' + (typeof response.data));
+      }
+
+      // Ensure 'elements' exists
+      if (!response.data.elements || !Array.isArray(response.data.elements)) {
+        throw new Error('Invalid JSON format: Missing or invalid "elements" array');
       }
     } catch (proxyError) {
-      logger.warn('Proxy fetch failed, attempting direct FPL API access', { 
-        error: proxyError.message 
+      logger.warn('Proxy fetch failed, attempting cached data', { 
+        error: proxyError.message,
+        status: proxyError.response?.status,
+        headers: proxyError.response?.headers,
+        body: proxyError.response?.data?.slice(0, 200)
       });
       
-      // Fallback: Try to get cached data
-      const cachedBootstrap = await Bootstrap.findOne({ _id: 'bootstrap:latest' }).exec();
-      const cachedLiveData = cachedBootstrap?.data?.events?.[gameweek - 1]?.live_data;
+      const cachedBootstrap = await Bootstrap.findOne({ _id: 'bootstrap:latest' })
+        .maxTimeMS(5000) // Prevent timeout hang
+        .exec()
+        .catch(err => {
+          logger.error('MongoDB cache fetch failed', { error: err.message });
+          return null;
+        });
       
+      const cachedLiveData = cachedBootstrap?.data?.events?.[gameweek - 1]?.live_data;
       if (cachedLiveData) {
         logger.info('Using cached live data from Bootstrap');
         response = { data: { elements: cachedLiveData } };
       } else {
-        // Absolute fallback to default data
         logger.warn('Using default live data fallback');
         response = { data: DEFAULT_LIVE_DATA };
       }
     }
 
-    // Ensure elements array exists
-    const newData = response.data.elements || [];
-    
-    // Validate data is an array before using it
+    const newData = response.data.elements;
     if (!Array.isArray(newData)) {
       throw new Error(`Invalid data format: Expected array, got ${typeof newData}`);
     }
 
-    // Check if data has changed
-    if (JSON.stringify(newData) !== JSON.stringify(global.liveDataCache[gameweek])) {
+    if (newData.length > 0 && JSON.stringify(newData) !== JSON.stringify(global.liveDataCache[gameweek])) {
       global.liveDataCache[gameweek] = newData;
       const updatedStats = await getTop10kStats(gameweek);
 
-      // Parallel updates for subscribed clients
       const updatePromises = Array.from(subscriptions.entries())
         .filter(([_, { gameweek: subGW }]) => subGW === gameweek)
         .map(async ([client, { fplId }]) => {
@@ -144,7 +151,6 @@ const fetchLiveData = async (gameweek) => {
               return null;
             });
 
-            // Only send if client is still connected
             if (client.readyState === WebSocket.OPEN) {
               client.send(JSON.stringify({
                 type: 'liveUpdate',
@@ -168,10 +174,7 @@ const fetchLiveData = async (gameweek) => {
               logger.info(`Sent live update to fplId ${fplId} for GW ${gameweek}`);
             }
           } catch (updateError) {
-            logger.error(`Error processing update for fplId ${fplId}`, { 
-              error: updateError.message 
-            });
-            
+            logger.error(`Error processing update for fplId ${fplId}`, { error: updateError.message });
             if (client.readyState === WebSocket.OPEN) {
               client.send(JSON.stringify({
                 type: 'error',
@@ -184,21 +187,20 @@ const fetchLiveData = async (gameweek) => {
       await Promise.allSettled(updatePromises);
     }
   } catch (error) {
-    logger.error(`Comprehensive fallback triggered for GW ${gameweek}`, { 
-      error: error.message 
-    });
+    logger.error(`Comprehensive fallback triggered for GW ${gameweek}`, { error: error.message });
+    
+    // Notify only relevant subscribed clients
+    Array.from(subscriptions.entries())
+      .filter(([_, { gameweek: subGW }]) => subGW === gameweek)
+      .forEach(([client, _]) => {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(JSON.stringify({
+            type: 'error',
+            message: 'Unable to fetch live data. Showing placeholder data.'
+          }));
+        }
+      });
 
-    // Notify all subscribed clients about the failure
-    subscriptions.forEach((_, client) => {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(JSON.stringify({
-          type: 'error',
-          message: 'Unable to fetch live data. Showing placeholder data.'
-        }));
-      }
-    });
-
-    // Ensure some data exists
     if (!global.liveDataCache[gameweek]) {
       global.liveDataCache[gameweek] = DEFAULT_LIVE_DATA.elements;
     }
