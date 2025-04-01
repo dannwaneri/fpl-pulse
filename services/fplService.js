@@ -58,16 +58,36 @@ const getBootstrapData = async (forceRefresh = false) => {
     console.log('Using cached bootstrap data');
     return cachedBootstrapData;
   }
-  const rawData = await loadBootstrapData();
-  cachedBootstrapData = {
-    elements: rawData.elements || rawData.players || [],
-    events: rawData.events || [],
-    teams: rawData.teams || [],
-    ...rawData
-  };
-  bootstrapTimestamp = Date.now();
-  console.log('Fetched and cached bootstrap data');
-  return cachedBootstrapData;
+  
+  const BASE_URL = process.env.NODE_ENV === 'production' 
+    ? 'https://fpl-pulse.onrender.com' 
+    : 'http://localhost:5000';
+    
+  try {
+    // Use the proxy endpoint instead of loadBootstrapData
+    const response = await fetchWithRetry(`${BASE_URL}/fpl-basic/bootstrap`);
+    cachedBootstrapData = {
+      elements: response.data.elements || [],
+      events: response.data.events || [],
+      teams: response.data.teams || [],
+      ...response.data
+    };
+    bootstrapTimestamp = Date.now();
+    console.log('Fetched and cached bootstrap data');
+    return cachedBootstrapData;
+  } catch (error) {
+    console.error('Error fetching bootstrap data:', error);
+    // Fall back to original method if proxy fails
+    const rawData = await loadBootstrapData();
+    cachedBootstrapData = {
+      elements: rawData.elements || rawData.players || [],
+      events: rawData.events || [],
+      teams: rawData.teams || [],
+      ...rawData
+    };
+    bootstrapTimestamp = Date.now();
+    return cachedBootstrapData;
+  }
 };
 
 const getManagerData = async (id) => {

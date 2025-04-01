@@ -21,36 +21,23 @@ const delay = (ms) => new Promise(resolve => {
   const jitter = Math.random() * 300;
   setTimeout(resolve, ms + jitter);
 });
-
 async function fetchWithRetry(url, retries, delayMs) {
   for (let i = 0; i < retries; i++) {
     try {
+      // No headers approach for internal API calls
       const response = await axios.get(url, {
-        timeout: 15000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Mobile Safari/537.36',
-          'Accept': 'application/json',
-          'Accept-Encoding': 'gzip, deflate, br, zstd',
-          'Accept-Language': 'en-US,en;q=0.9',
-          'Cache-Control': 'no-cache',
-          'Pragma': 'no-cache',
-          'Sec-Ch-Ua': '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"',
-          'Sec-Ch-Ua-Mobile': '?1',
-          'Sec-Ch-Ua-Platform': '"Android"',
-          'Sec-Fetch-Dest': 'empty',
-          'Sec-Fetch-Mode': 'cors',
-          'Sec-Fetch-Site': 'cross-site',
-          'Cookie': process.env.FPL_COOKIE || ''
-        }
+        timeout: 15000
+        // No headers at all for internal calls to our proxy
       });
+      
       return response;
     } catch (err) {
       const status = err.response?.status;
       logger.error(`Fetch attempt ${i + 1}/${retries} failed for ${url}`, {
         status,
-        headers: err.response?.headers,
-        body: err.response?.data ? JSON.stringify(err.response.data).slice(0, 200) : 'No body'
+        message: err.message
       });
+      
       if (status === 403 || status === 429) {
         const retryAfter = err.response?.headers['retry-after'] 
           ? Math.max(parseInt(err.response.headers['retry-after'], 10) * 1000, 1000)
@@ -59,12 +46,12 @@ async function fetchWithRetry(url, retries, delayMs) {
         await delay(retryAfter);
         continue;
       }
+      
       if (i === retries - 1) throw err;
       await delay(delayMs);
     }
   }
 }
-
 
 const fetchLiveData = async (gameweek) => {
   const BASE_URL = process.env.NODE_ENV === 'production' 
@@ -73,54 +60,70 @@ const fetchLiveData = async (gameweek) => {
 
   try {
     let response;
+    
+    // First check if we have fresh data in memory cache
+    if (global.liveDataCache[gameweek] && 
+        global.liveDataCache[`${gameweek}:timestamp`] && 
+        Date.now() - global.liveDataCache[`${gameweek}:timestamp`] < 300000) { // 5 minutes
+      logger.info(`Using in-memory cache for GW ${gameweek}`);
+      return;
+    }
+    
+    // Use our new CORS-friendly endpoint
     try {
-      response = await fetchWithRetry(`${BASE_URL}/fpl-proxy/event/${gameweek}/live/`, 3, 1000);
-      console.log('Live Response:', response.data);
+      logger.info(`Fetching live data for GW ${gameweek} via proxy`);
+      response = await fetchWithRetry(`${BASE_URL}/fpl-basic/live/${gameweek}`, 2, 1000);
       
-      // Check if response is JSON
-      if (!response || !response.data || typeof response.data !== 'object') {
-        throw new Error('Invalid response: Expected JSON, got ' + (typeof response.data));
+      if (!response || !response.data || !Array.isArray(response.data.elements)) {
+        throw new Error('Invalid or empty response received from proxy');
       }
-
-      // Ensure 'elements' exists
-      if (!response.data.elements || !Array.isArray(response.data.elements)) {
-        throw new Error('Invalid JSON format: Missing or invalid "elements" array');
-      }
+      
+      logger.info(`Successfully fetched live data for GW ${gameweek} via proxy`);
     } catch (proxyError) {
-      logger.warn('Proxy fetch failed, attempting cached data', { 
+      logger.warn(`Proxy fetch failed for GW ${gameweek}`, { 
         error: proxyError.message,
-        status: proxyError.response?.status,
-        headers: proxyError.response?.headers,
-        body: proxyError.response?.data?.slice(0, 200)
+        statusCode: proxyError.response?.status
       });
       
-      const cachedBootstrap = await Bootstrap.findOne({ _id: 'bootstrap:latest' })
-        .maxTimeMS(5000) // Prevent timeout hang
-        .exec()
-        .catch(err => {
-          logger.error('MongoDB cache fetch failed', { error: err.message });
-          return null;
+      // Fall back to cached data if proxy fails
+      try {
+        const cachedBootstrap = await Bootstrap.findOne({ _id: 'bootstrap:latest' }).exec();
+        const cachedLiveData = cachedBootstrap?.data?.events?.[gameweek - 1]?.live_data;
+        
+        if (cachedLiveData && Array.isArray(cachedLiveData)) {
+          logger.info(`Using cached live data from Bootstrap for GW ${gameweek}`);
+          response = { data: { elements: cachedLiveData } };
+        } else {
+          // Absolute fallback to default data
+          logger.warn(`Using default live data fallback for GW ${gameweek}`);
+          response = { data: DEFAULT_LIVE_DATA };
+        }
+      } catch (cacheError) {
+        logger.error(`Cache retrieval failed for GW ${gameweek}`, {
+          error: cacheError.message
         });
-      
-      const cachedLiveData = cachedBootstrap?.data?.events?.[gameweek - 1]?.live_data;
-      if (cachedLiveData) {
-        logger.info('Using cached live data from Bootstrap');
-        response = { data: { elements: cachedLiveData } };
-      } else {
-        logger.warn('Using default live data fallback');
+        // Final fallback
         response = { data: DEFAULT_LIVE_DATA };
       }
     }
 
-    const newData = response.data.elements;
+    // Ensure elements array exists
+    const newData = response.data.elements || [];
+    
+    // Validate data is an array before using it
     if (!Array.isArray(newData)) {
       throw new Error(`Invalid data format: Expected array, got ${typeof newData}`);
     }
 
-    if (newData.length > 0 && JSON.stringify(newData) !== JSON.stringify(global.liveDataCache[gameweek])) {
+    // Check if data has changed before processing
+    if (JSON.stringify(newData) !== JSON.stringify(global.liveDataCache[gameweek])) {
+      // Update cache with timestamp
       global.liveDataCache[gameweek] = newData;
+      global.liveDataCache[`${gameweek}:timestamp`] = Date.now();
+      
       const updatedStats = await getTop10kStats(gameweek);
 
+      // Parallel updates for subscribed clients
       const updatePromises = Array.from(subscriptions.entries())
         .filter(([_, { gameweek: subGW }]) => subGW === gameweek)
         .map(async ([client, { fplId }]) => {
@@ -151,6 +154,7 @@ const fetchLiveData = async (gameweek) => {
               return null;
             });
 
+            // Only send if client is still connected
             if (client.readyState === WebSocket.OPEN) {
               client.send(JSON.stringify({
                 type: 'liveUpdate',
@@ -174,7 +178,10 @@ const fetchLiveData = async (gameweek) => {
               logger.info(`Sent live update to fplId ${fplId} for GW ${gameweek}`);
             }
           } catch (updateError) {
-            logger.error(`Error processing update for fplId ${fplId}`, { error: updateError.message });
+            logger.error(`Error processing update for fplId ${fplId}`, { 
+              error: updateError.message 
+            });
+            
             if (client.readyState === WebSocket.OPEN) {
               client.send(JSON.stringify({
                 type: 'error',
@@ -185,28 +192,31 @@ const fetchLiveData = async (gameweek) => {
         });
 
       await Promise.allSettled(updatePromises);
+    } else {
+      logger.info(`No data changes for GW ${gameweek}, skipping updates`);
     }
   } catch (error) {
-    logger.error(`Comprehensive fallback triggered for GW ${gameweek}`, { error: error.message });
-    
-    // Notify only relevant subscribed clients
-    Array.from(subscriptions.entries())
-      .filter(([_, { gameweek: subGW }]) => subGW === gameweek)
-      .forEach(([client, _]) => {
-        if (client.readyState === WebSocket.OPEN) {
-          client.send(JSON.stringify({
-            type: 'error',
-            message: 'Unable to fetch live data. Showing placeholder data.'
-          }));
-        }
-      });
+    logger.error(`Comprehensive fallback triggered for GW ${gameweek}`, { 
+      error: error.message 
+    });
 
+    // Notify all subscribed clients about the failure
+    subscriptions.forEach((_, client) => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(JSON.stringify({
+          type: 'error',
+          message: 'Unable to fetch live data. Showing placeholder data.'
+        }));
+      }
+    });
+
+    // Ensure some data exists
     if (!global.liveDataCache[gameweek]) {
       global.liveDataCache[gameweek] = DEFAULT_LIVE_DATA.elements;
+      global.liveDataCache[`${gameweek}:timestamp`] = Date.now();
     }
   }
 };
-
 const setupWebSocket = (wss) => {
   let currentGameweek = null;
   

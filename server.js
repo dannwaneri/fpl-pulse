@@ -10,11 +10,11 @@ const { DEFAULT_BOOTSTRAP_DATA, loadBootstrapData } = require('./services/bootst
 const fplRoutes = require('./routes/fplRoutes');
 const leagueRoutes = require('./routes/leagueRoutes');
 const { setupWebSocket } = require('./services/websocketService');
+const { setupFplProxy } = require('./services/fplProxyService');
 const logger = require('./utils/logger');
 const helmet = require('helmet');
 const compression = require('compression');
 const rateLimit = require('express-rate-limit');
-const { createProxyMiddleware } = require('http-proxy-middleware');
 
 // Configuration constants
 const PORT = process.env.PORT || 5000;
@@ -34,7 +34,7 @@ const apiLimiter = rateLimit({
 const setupWorker = () => {
   const app = express();
 
-  // Security middleware
+  // Security middleware with updated CSP to allow connecting to FPL API
   app.use(helmet({
     contentSecurityPolicy: {
       directives: {
@@ -42,7 +42,7 @@ const setupWorker = () => {
         scriptSrc: ["'self'", "'unsafe-inline'", 'cdnjs.cloudflare.com'],
         styleSrc: ["'self'", "'unsafe-inline'", 'fonts.googleapis.com'],
         imgSrc: ["'self'", 'data:', 'https:'],
-        connectSrc: ["'self'", 'wss:', 'ws:']
+        connectSrc: ["'self'", 'wss:', 'ws:', 'https://fantasy.premierleague.com', 'https://fpl-pulse.onrender.com']
       }
     }
   }));
@@ -50,14 +50,17 @@ const setupWorker = () => {
   // Compression middleware
   app.use(compression());
 
-  // Middleware
+  // Enhanced CORS middleware with credentials support
   app.use(cors({
     origin: NODE_ENV === 'production' 
-      ? ['https://fpl-pulse.onrender.com', 'https://www.fpl-pulse.com','http://localhost:3000']
+      ? ['https://fpl-pulse.onrender.com', 'https://www.fpl-pulse.com'] 
       : '*',
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
+    allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'X-Requested-With', 'Accept'],
+    credentials: true,
+    maxAge: 86400 // Cache preflight requests for 1 day
   }));
+
   app.use(express.json({ limit: '50kb' })); // Prevent large payloads
   app.use(express.urlencoded({ extended: true, limit: '50kb' }));
 
@@ -100,52 +103,8 @@ const setupWorker = () => {
     }
   };
 
-  app.use('/fpl-proxy', createProxyMiddleware({
-    target: 'https://fantasy.premierleague.com',
-    changeOrigin: true,
-    pathRewrite: { '^/fpl-proxy': '/api' },
-    proxyReqOptDecorator: (proxyReqOpts) => {
-      // Add web proxy configuration if credentials are available
-      if (process.env.PROXY_USERNAME && process.env.PROXY_PASSWORD) {
-        proxyReqOpts.proxy = {
-          host: process.env.PROXY_HOST || 'p.webshare.io',
-          port: parseInt(process.env.PROXY_PORT) || 80,
-          auth: { 
-            username: process.env.PROXY_USERNAME, 
-            password: process.env.PROXY_PASSWORD 
-          }
-        };
-      }
-      return proxyReqOpts;
-    },
-    onProxyReq: (proxyReq) => {
-      if (process.env.FPL_COOKIE) {
-        proxyReq.setHeader('Cookie', process.env.FPL_COOKIE);
-      }
-      const userAgents = [
-        'Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Mobile Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
-      ];
-      proxyReq.setHeader('User-Agent', userAgents[Math.floor(Math.random() * userAgents.length)]);
-      proxyReq.setHeader('Accept', 'application/json');
-      proxyReq.setHeader('Accept-Encoding', 'gzip, deflate, br, zstd');
-      proxyReq.setHeader('Accept-Language', 'en-US,en;q=0.9');
-      proxyReq.setHeader('Cache-Control', 'no-cache');
-      proxyReq.setHeader('Pragma', 'no-cache');
-      proxyReq.setHeader('Referer', 'https://fantasy.premierleague.com/');
-      proxyReq.setHeader('Sec-Ch-Ua', '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"');
-      proxyReq.setHeader('Sec-Ch-Ua-Mobile', '?1');
-      proxyReq.setHeader('Sec-Ch-Ua-Platform', '"Android"');
-      proxyReq.setHeader('Sec-Fetch-Dest', 'empty');
-      proxyReq.setHeader('Sec-Fetch-Mode', 'cors');
-      proxyReq.setHeader('Sec-Fetch-Site', 'cross-site');
-    },
-    onError: (err, req, res) => {
-      logger.error('Proxy error:', { message: err.message, path: req.path });
-      res.status(500).send('Proxy error');
-    }
-  }));
+  // Setup the new FPL proxy service - ADD THIS LINE
+  setupFplProxy(app);
 
   // API Routes
   app.use('/api/fpl', fplRoutes);
