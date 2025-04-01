@@ -549,7 +549,7 @@ const useFplData = () => {
       stopPolling();
       if (ws.current.readyState === WebSocket.OPEN && fplId && data?.currentGameweek) {
         ws.current.send(JSON.stringify({ type: 'subscribe', fplId, gameweek: data.currentGameweek }));
-        console.log(`Subscribed to GW ${data.currentGameweek} for fplId ${fplId}`);
+        //console.log(`Subscribed to GW ${data.currentGameweek} for fplId ${fplId}`);
       }
     };
 
