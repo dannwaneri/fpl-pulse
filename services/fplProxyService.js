@@ -102,15 +102,24 @@ const setupFplProxy = (app) => {
   app.get('/fpl-basic/live/:gameweek', async (req, res) => {
     try {
       const gameweek = req.params.gameweek;
-      const data = await fetchFplData(
-        `https://fantasy.premierleague.com/api/event/${gameweek}/live/`,
-        `live:${gameweek}`
-      );
+      
+      // Try to fetch directly from FPL API without database dependency
+      const response = await fetch(`https://fantasy.premierleague.com/api/event/${gameweek}/live/`, {
+        timeout: 15000
+        // No headers to avoid CORS issues
+      });
+      
+      if (!response.ok) {
+        throw new Error(`FPL API error: ${response.status}`);
+      }
+      
+      const data = await response.json();
       res.json(data);
     } catch (error) {
+      console.error(`Error fetching live data for gameweek ${req.params.gameweek}:`, error.message);
       res.status(500).json({ 
-        error: `Failed to fetch live data for gameweek ${req.params.gameweek}`,
-        details: error.message
+        error: 'Failed to fetch live data',
+        message: error.message
       });
     }
   });

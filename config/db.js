@@ -6,7 +6,7 @@ const logger = require('../utils/logger');
 const mongooseOptions = {
   useNewUrlParser: true,
   useUnifiedTopology: true,
-  serverSelectionTimeoutMS: 5000,
+  serverSelectionTimeoutMS: 30000, // Increase from 5000 to 30000
   heartbeatFrequencyMS: 10000,
   autoIndex: true,
 };
