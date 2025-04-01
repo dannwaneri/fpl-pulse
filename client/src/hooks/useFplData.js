@@ -594,7 +594,9 @@ const useFplData = () => {
     
     ws.current.onerror = (err) => {
       console.error('WebSocket error occurred:', err);
-      dispatch({ type: ACTIONS.SET_ERROR, payload: 'WebSocket connection failed. Please ensure the server is running on port 5000.' });
+      // Immediately start polling as fallback
+      startPolling();
+      dispatch({ type: ACTIONS.SET_ERROR, payload: 'WebSocket connection failed. Falling back to polling.' });
     };
 
     ws.current.onclose = (event) => {
