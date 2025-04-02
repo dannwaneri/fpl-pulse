@@ -86,10 +86,10 @@ const CaptaincyOptimizer = ({ fplId, gameweek, activeChip }) => {
       try {
         // Fetch both captaincy suggestions and top10k data in parallel
         // Updated code
-const [suggestionsData, top10kData] = await Promise.all([
-  fetchWithRetry(getApiUrl(`/api/fpl/${fplId}/captaincy/${gameweek}${activeChip ? `?chip=${activeChip}` : ''}`)),
-  cachedTop10k || fetchWithRetry(getApiUrl(`/api/fpl/top10k/${gameweek}`))
-]);
+        const [suggestionsData, top10kData] = await Promise.all([
+          fetchWithRetry(getApiUrl(`/api/fpl/${fplId}/captaincy/${gameweek}${activeChip ? `?chip=${activeChip}` : ''}`)),
+          cachedTop10k || fetchWithRetry(getApiUrl(`/api/fpl/top10k/${gameweek}`))
+        ]);
         
         // Validate and cross-check EO values
         const validatedSuggestions = suggestionsData.map(player => ({

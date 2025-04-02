@@ -1,5 +1,15 @@
 const axios = require('axios');
 const logger = require('../utils/logger');
+const { 
+  getBootstrapData, 
+  getPicksData, 
+  getManagerData,
+  getPlannerData,
+  getTop10kStats,
+  getCaptaincySuggestions,
+  simulateRank,
+  clearCache
+} = require('./fplService');
 
 // Cache mechanism to reduce API calls
 const cache = {
@@ -67,6 +77,148 @@ const fetchFplData = async (url, cacheKey = null, method = 'GET', body = null) =
   }
 };
 
+// Adapter for transforming manager data responses
+const formatManagerResponse = (serviceResponse) => {
+  if (!serviceResponse) return null;
+  
+  return {
+    name: serviceResponse.name || 'Unknown Manager',
+    teamName: serviceResponse.teamName,
+    totalPoints: serviceResponse.totalPoints || 0,
+    rank: serviceResponse.rank || null,
+    currentGameweek: serviceResponse.currentGameweek || 1,
+    activeChip: serviceResponse.activeChip || null,
+    chipsUsed: serviceResponse.chipsUsed || [],
+    leagues: Array.isArray(serviceResponse.leagues) ? serviceResponse.leagues : []
+  };
+};
+
+// Adapter for transforming picks data responses
+const formatPicksResponse = (serviceResponse) => {
+  if (!serviceResponse) return { 
+    picks: [], 
+    transferPenalty: 0,
+    totalLivePoints: 0,
+    autosubs: [],
+    viceCaptainPoints: null,
+    liveRank: null,
+    activeChip: null,
+    assistantManagerPoints: null,
+    assistantManager: null
+  };
+  
+  // Validate and map events (goals, assists, etc.)
+  const pickWithProcessedEvents = (serviceResponse.picks || []).map(pick => {
+    // Ensure events are correctly formatted for frontend display
+    const processedEvents = Array.isArray(pick.events) ? pick.events.map(event => ({
+      type: event.type,
+      points: event.points || 0,
+      count: event.count || 1
+    })) : [];
+    
+    return {
+      ...pick,
+      events: processedEvents,
+      // Ensure these fields are always provided
+      teamShortName: pick.teamShortName || 'UNK',
+      eo: pick.eo || '0.0'
+    };
+  });
+  
+  return {
+    picks: pickWithProcessedEvents,
+    transferPenalty: serviceResponse.transferPenalty || 0,
+    totalLivePoints: serviceResponse.totalLivePoints || 0,
+    autosubs: serviceResponse.autosubs || [],
+    viceCaptainPoints: serviceResponse.viceCaptainPoints || null,
+    liveRank: serviceResponse.liveRank || null,
+    activeChip: serviceResponse.activeChip || null,
+    assistantManagerPoints: serviceResponse.assistantManagerPoints || null,
+    assistantManager: serviceResponse.assistantManager || null
+  };
+};
+
+// Adapter for transforming planner data responses
+const formatPlannerResponse = (serviceResponse) => {
+  if (!serviceResponse) return null;
+  
+  // Map and validate fixtures
+  const validatedFixtures = (serviceResponse.fixtures || []).map(fixture => ({
+    gameweek: fixture.gameweek || 1,
+    deadline: fixture.deadline || new Date().toISOString(),
+    isCurrent: fixture.isCurrent || false,
+    matches: Array.isArray(fixture.matches) ? fixture.matches.map(match => ({
+      teamH: match.teamH || 0,
+      teamA: match.teamA || 0,
+      teamHName: match.teamHName || 'UNK',
+      teamAName: match.teamAName || 'UNK',
+      difficultyH: match.difficultyH || 3,
+      difficultyA: match.difficultyA || 3
+    })) : []
+  }));
+  
+  return {
+    currentPicks: serviceResponse.currentPicks || [],
+    allPlayers: serviceResponse.allPlayers || [],
+    fixtures: validatedFixtures,
+    budget: serviceResponse.budget || 100,
+    chipsUsed: serviceResponse.chipsUsed || [],
+    chipsAvailable: serviceResponse.chipsAvailable || {
+      wildcard1: true, wildcard2: true, freehit: true, 
+      bboost: true, triplecaptain: true, assistant_manager: true
+    },
+    currentGameweek: serviceResponse.currentGameweek || 1,
+    activeChip: serviceResponse.activeChip || null,
+    assistantManager: serviceResponse.assistantManager || null,
+    availableManagers: serviceResponse.availableManagers || []
+  };
+};
+
+// Adapter for transforming top10k stats responses
+const formatTop10kResponse = (serviceResponse) => {
+  if (!serviceResponse) return {};
+  
+  // Process tier data (top1k, top10k, etc.)
+  const processTier = (tierData) => {
+    if (!tierData) return null;
+    
+    return {
+      averagePoints: tierData.averagePoints || 0,
+      wildcardUsage: tierData.wildcardUsage || '0%',
+      freehitUsage: tierData.freehitUsage || '0%',
+      benchBoostUsage: tierData.benchBoostUsage || '0%',
+      tripleCaptainUsage: tierData.tripleCaptainUsage || '0%',
+      assistantManagerUsage: tierData.assistantManagerUsage || '0%',
+      topPlayers: Array.isArray(tierData.topPlayers) ? tierData.topPlayers : [],
+      formations: tierData.formations || {},
+      eoBreakdown: tierData.eoBreakdown || {},
+      managerEO: tierData.managerEO || {}
+    };
+  };
+  
+  return {
+    top1k: processTier(serviceResponse.top1k),
+    top10k: processTier(serviceResponse.top10k),
+    top100k: processTier(serviceResponse.top100k),
+    top1m: processTier(serviceResponse.top1m)
+  };
+};
+
+// Adapter for transforming captaincy suggestions
+const formatCaptaincyResponse = (serviceResponse) => {
+  if (!Array.isArray(serviceResponse)) return [];
+  
+  return serviceResponse.map(suggestion => ({
+    id: suggestion.id || 0,
+    name: suggestion.name || 'Unknown Player',
+    teamId: suggestion.teamId || 0,
+    form: suggestion.form || '0.0',
+    difficulty: suggestion.difficulty || 3,
+    eo: suggestion.eo || 0,
+    score: suggestion.score || 0
+  }));
+};
+
 // Setup all proxy routes
 const setupFplProxy = (app) => {
   // Debug route to check if service is working
@@ -85,10 +237,7 @@ const setupFplProxy = (app) => {
   // Bootstrap static data
   app.get('/fpl-basic/bootstrap', async (req, res) => {
     try {
-      const data = await fetchFplData(
-        'https://fantasy.premierleague.com/api/bootstrap-static/',
-        'bootstrap'
-      );
+      const data = await getBootstrapData();
       res.json(data);
     } catch (error) {
       res.status(500).json({ 
@@ -128,11 +277,9 @@ const setupFplProxy = (app) => {
   app.get('/fpl-basic/entry/:id', async (req, res) => {
     try {
       const id = req.params.id;
-      const data = await fetchFplData(
-        `https://fantasy.premierleague.com/api/entry/${id}/`,
-        `entry:${id}`
-      );
-      res.json(data);
+      const managerData = await getManagerData(id);
+      const formattedResponse = formatManagerResponse(managerData);
+      res.json(formattedResponse);
     } catch (error) {
       res.status(500).json({ 
         error: `Failed to fetch manager data for ID ${req.params.id}`,
@@ -163,11 +310,9 @@ const setupFplProxy = (app) => {
     try {
       const id = req.params.id;
       const gameweek = req.params.gameweek;
-      const data = await fetchFplData(
-        `https://fantasy.premierleague.com/api/entry/${id}/event/${gameweek}/picks/`,
-        `entry:${id}:picks:${gameweek}`
-      );
-      res.json(data);
+      const data = await getPicksData(id, gameweek);
+      const formattedResponse = formatPicksResponse(data);
+      res.json(formattedResponse);
     } catch (error) {
       res.status(500).json({ 
         error: `Failed to fetch picks for ID ${req.params.id}, gameweek ${req.params.gameweek}`,
@@ -243,15 +388,12 @@ const setupFplProxy = (app) => {
     }
   });
 
-  // Current gameweek status (helper endpoint that returns just current gameweek info)
+  // Current gameweek status
   app.get('/fpl-basic/current-gameweek', async (req, res) => {
     try {
-      const bootstrapData = await fetchFplData(
-        'https://fantasy.premierleague.com/api/bootstrap-static/',
-        'bootstrap'
-      );
+      const bootstrapData = await getBootstrapData();
       
-      const currentEvent = bootstrapData.events.find(e => e.is_current);
+      const currentEvent = bootstrapData.events?.find(e => e.is_current);
       
       if (!currentEvent) {
         return res.status(404).json({ error: 'No current gameweek found' });
@@ -272,100 +414,72 @@ const setupFplProxy = (app) => {
     }
   });
 
+  // Planner endpoint
+  app.get('/fpl-basic/entry/:id/planner', async (req, res) => {
+    try {
+      const id = req.params.id;
+      const data = await getPlannerData(id);
+      const formattedResponse = formatPlannerResponse(data);
+      res.json(formattedResponse);
+    } catch (error) {
+      res.status(500).json({ 
+        error: `Failed to fetch planner data`,
+        details: error.message
+      });
+    }
+  });
 
-// Planner data - combines multiple API calls into one response
-app.get('/fpl-basic/entry/:id/planner', async (req, res) => {
-  try {
-    const id = req.params.id;
-    
-    // Make all required API calls in parallel
-    const [managerData, bootstrapData, fixturesData] = await Promise.all([
-      fetchFplData(
-        `https://fantasy.premierleague.com/api/entry/${id}/`,
-        `entry:${id}`
-      ),
-      fetchFplData(
-        'https://fantasy.premierleague.com/api/bootstrap-static/',
-        'bootstrap'
-      ),
-      fetchFplData(
-        'https://fantasy.premierleague.com/api/fixtures/',
-        'fixtures'
-      )
-    ]);
-    
-    // Get current gameweek
-    const currentGameweek = managerData.current_event || 
-                            bootstrapData.events.find(e => e.is_current)?.id || 1;
-    
-    // Get picks for current gameweek
-    const picksData = await fetchFplData(
-      `https://fantasy.premierleague.com/api/entry/${id}/event/${currentGameweek}/picks/`,
-      `entry:${id}:picks:${currentGameweek}`
-    );
-    
-    // Combine data into planner format
-    const plannerData = {
-      currentPicks: picksData.picks.map(pick => {
-        const player = bootstrapData.elements.find(el => el.id === pick.element) || {};
-        return {
-          id: pick.element,
-          name: player.web_name || `${player.first_name} ${player.second_name}` || 'Unknown',
-          teamId: player.team || 0,
-          positionType: player.element_type ? { 1: 'GK', 2: 'DEF', 3: 'MID', 4: 'FWD' }[player.element_type] : 'UNK',
-          cost: player.now_cost ? player.now_cost / 10 : 0,
-          position: pick.position,
-          multiplier: pick.multiplier,
-          total_points: player.total_points || 0,
-          form: player.form || 0
-        };
-      }),
-      allPlayers: bootstrapData.elements.map(player => ({
-        id: player.id,
-        name: player.web_name || `${player.first_name} ${player.second_name}`,
-        teamId: player.team,
-        positionType: { 1: 'GK', 2: 'DEF', 3: 'MID', 4: 'FWD' }[player.element_type],
-        cost: player.now_cost / 10,
-        total_points: player.total_points || 0,
-      })),
-      fixtures: bootstrapData.events.map(event => ({
-        gameweek: event.id,
-        deadline: event.deadline_time,
-        isCurrent: event.is_current,
-        matches: fixturesData
-          .filter(f => f.event === event.id)
-          .map(f => ({
-            teamH: f.team_h,
-            teamA: f.team_a,
-            teamHName: bootstrapData.teams.find(t => t.id === f.team_h)?.short_name || 'UNK',
-            teamAName: bootstrapData.teams.find(t => t.id === f.team_a)?.short_name || 'UNK',
-            difficultyH: f.team_h_difficulty,
-            difficultyA: f.team_a_difficulty
-          }))
-      })),
-      budget: managerData.last_debt_value / 10 || 100,
-      chipsUsed: managerData.chips?.map(c => c.name) || [],
-      chipsAvailable: {
-        wildcard1: !(managerData.chips?.some(c => c.name === 'wildcard' && c.status.event <= 20) || false),
-        wildcard2: !(managerData.chips?.some(c => c.name === 'wildcard' && c.status.event > 20) || false),
-        freehit: !(managerData.chips?.some(c => c.name === 'freehit') || false),
-        bboost: !(managerData.chips?.some(c => c.name === 'bboost') || false),
-        triplecaptain: !(managerData.chips?.some(c => c.name === 'triplecaptain') || false)
-      },
-      currentGameweek: currentGameweek,
-      activeChip: picksData.active_chip || null
-    };
-    
-    res.json(plannerData);
-  } catch (error) {
-    res.status(500).json({ 
-      error: `Failed to fetch planner data`,
-      details: error.message
-    });
-  }
-});
+  // Top 10k stats - with adapter
+  app.get('/api/fpl/top10k/:gameweek', async (req, res) => {
+    try {
+      const gameweek = req.params.gameweek;
+      const forceRefresh = req.query.refresh === 'true';
+      const data = await getTop10kStats(gameweek, forceRefresh);
+      const formattedResponse = formatTop10kResponse(data);
+      res.json(formattedResponse);
+    } catch (error) {
+      res.status(500).json({ 
+        error: `Failed to fetch top 10k stats for gameweek ${req.params.gameweek}`,
+        details: error.message
+      });
+    }
+  });
 
+  // Captaincy suggestions - with adapter
+  app.get('/api/fpl/:id/captaincy/:gameweek', async (req, res) => {
+    try {
+      const id = req.params.id;
+      const gameweek = req.params.gameweek;
+      const chip = req.query.chip;
+      const data = await getCaptaincySuggestions(id, gameweek);
+      const formattedResponse = formatCaptaincyResponse(data);
+      res.json(formattedResponse);
+    } catch (error) {
+      res.status(500).json({ 
+        error: `Failed to fetch captaincy suggestions`,
+        details: error.message
+      });
+    }
+  });
 
+  // Rank simulator - with adapter
+  app.get('/api/fpl/:id/rank-simulator/:gameweek', async (req, res) => {
+    try {
+      const id = req.params.id;
+      const gameweek = req.params.gameweek;
+      const additionalPoints = parseInt(req.query.points) || 0;
+      const data = await simulateRank(id, gameweek, additionalPoints);
+      res.json({
+        simulatedRank: data.simulatedRank || null,
+        simulatedPoints: data.simulatedPoints || 0
+      });
+    } catch (error) {
+      res.status(500).json({ 
+        error: `Failed to simulate rank`,
+        details: error.message
+      });
+    }
+  });
 
   // Health check endpoint
   app.get('/fpl-basic/health', (req, res) => {
@@ -379,33 +493,23 @@ app.get('/fpl-basic/entry/:id/planner', async (req, res) => {
   });
 
   // Cache clear endpoint (admin)
-  app.post('/fpl-basic/cache/clear', (req, res) => {
-    const keyPattern = req.query.key || '';
-    let count = 0;
-    
-    if (keyPattern) {
-      // Clear specific cache entries matching pattern
-      Object.keys(cache.data).forEach(key => {
-        if (key.includes(keyPattern)) {
-          delete cache.data[key];
-          delete cache.timestamps[key];
-          count++;
-        }
+  app.post('/fpl-basic/cache/clear', async (req, res) => {
+    try {
+      const keyPattern = req.query.key || '';
+      await clearCache(keyPattern);
+      res.json({ 
+        status: 'ok', 
+        message: `Cache cleared successfully`
       });
-    } else {
-      // Clear all cache
-      count = Object.keys(cache.data).length;
-      cache.data = {};
-      cache.timestamps = {};
+    } catch (error) {
+      res.status(500).json({ 
+        error: 'Failed to clear cache',
+        details: error.message
+      });
     }
-    
-    res.json({ 
-      status: 'ok', 
-      message: `Cleared ${count} cache entries`
-    });
   });
 
-  logger.info('FPL Basic Proxy Service initialized with routes:');
+  logger.info('FPL Proxy Service initialized with routes:');
   logger.info('- /fpl-basic/debug');
   logger.info('- /fpl-basic/bootstrap');
   logger.info('- /fpl-basic/live/:gameweek');
@@ -419,6 +523,10 @@ app.get('/fpl-basic/entry/:id/planner', async (req, res) => {
   logger.info('- /fpl-basic/current-gameweek');
   logger.info('- GET /fpl-basic/entry/:id/planner - Get combined planner data');
   logger.info('- /fpl-basic/health');
+  logger.info('- POST /fpl-basic/cache/clear - Clear cache');
+  logger.info('- /api/fpl/top10k/:gameweek - Get top 10k stats (with adapter)');
+  logger.info('- /api/fpl/:id/captaincy/:gameweek - Get captaincy suggestions (with adapter)');
+  logger.info('- /api/fpl/:id/rank-simulator/:gameweek - Simulate rank (with adapter)');
 };
 
 module.exports = { setupFplProxy };

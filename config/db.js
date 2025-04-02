@@ -4,8 +4,6 @@ const logger = require('../utils/logger');
 
 // Connection options with retry settings
 const mongooseOptions = {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
   serverSelectionTimeoutMS: 30000, // Increase from 5000 to 30000
   heartbeatFrequencyMS: 10000,
   autoIndex: true,

@@ -3,57 +3,110 @@ const router = express.Router();
 const axios = require('axios');
 const { loadBootstrapData } = require('../services/bootstrapService');
 
-// New route for fetching fixtures
-router.get('/fixtures/:gameweek', async (req, res) => {
-  try {
-    const { gameweek } = req.params;
-    const fixturesResponse = await axios.get(`https://fantasy.premierleague.com/api/fixtures/?event=${gameweek}`);
-    const liveResponse = await axios.get(`https://fantasy.premierleague.com/api/event/${gameweek}/live/`);
-    
-    // Enrich fixtures with live data
-    const enrichedFixtures = fixturesResponse.data.map(fixture => {
-      const homeTeamLiveData = liveResponse.data.elements.filter(el => el.team === fixture.team_h);
-      const awayTeamLiveData = liveResponse.data.elements.filter(el => el.team === fixture.team_a);
-      
-      return {
-        ...fixture,
-        homeTeamBonus: homeTeamLiveData.reduce((sum, player) => sum + (player.stats.bonus || 0), 0),
-        awayTeamBonus: awayTeamLiveData.reduce((sum, player) => sum + (player.stats.bonus || 0), 0)
-      };
+// Middleware to validate integer parameters
+const validateIntParams = (req, res, next) => {
+  // Validate league ID parameter
+  if (req.params.leagueId !== undefined) {
+    const leagueId = parseInt(req.params.leagueId);
+    if (isNaN(leagueId) || leagueId.toString() !== req.params.leagueId) {
+      return res.status(400).json({ error: 'Invalid League ID parameter: must be an integer' });
+    }
+    req.params.leagueId = leagueId;
+  }
+  
+  // Validate gameweek parameter
+  if (req.params.gameweek !== undefined) {
+    const gameweek = parseInt(req.params.gameweek);
+    if (isNaN(gameweek) || gameweek.toString() !== req.params.gameweek || gameweek < 1 || gameweek > 38) {
+      return res.status(400).json({ error: 'Invalid gameweek parameter: must be an integer between 1 and 38' });
+    }
+    req.params.gameweek = gameweek;
+  }
+  
+  next();
+};
+
+// Cached data storage
+const cache = {
+  data: {},
+  timestamps: {},
+  ttl: {
+    fixtures: 3600000,     // 1 hour
+    league_live: 300000    // 5 minutes
+  }
+};
+
+
+
+// Error handling wrapper
+const asyncHandler = (fn) => (req, res, next) => {
+  Promise.resolve(fn(req, res, next)).catch(error => {
+    console.error(`League API Error: ${req.path}`, {
+      error: error.message,
+      stack: error.stack,
+      params: req.params,
+      query: req.query
     });
+    
+    res.status(500).json({ 
+      error: 'Internal Server Error', 
+      message: process.env.NODE_ENV === 'production' 
+        ? 'An unexpected error occurred' 
+        : error.message 
+    });
+  });
+};
+
+// Fixtures route
+router.get('/fixtures/:gameweek', 
+  validateIntParams,
+  asyncHandler(async (req, res) => {
+    const { gameweek } = req.params;
+    const [fixturesResponse, liveResponse] = await Promise.all([
+      axios.get(`https://fantasy.premierleague.com/api/fixtures/?event=${gameweek}`),
+      axios.get(`https://fantasy.premierleague.com/api/event/${gameweek}/live/`)
+    ]);
+    
+    const enrichedFixtures = fixturesResponse.data.map(fixture => ({
+      ...fixture,
+      homeTeamBonus: liveResponse.data.elements
+        .filter(el => el.team === fixture.team_h)
+        .reduce((sum, player) => sum + (player.stats.bonus || 0), 0),
+      awayTeamBonus: liveResponse.data.elements
+        .filter(el => el.team === fixture.team_a)
+        .reduce((sum, player) => sum + (player.stats.bonus || 0), 0)
+    }));
 
     res.json(enrichedFixtures);
-  } catch (error) {
-    console.error('Error fetching fixtures:', error.message);
-    res.status(500).json({ 
-      error: 'Failed to fetch fixtures', 
-      details: error.message 
-    });
-  }
-});
+  })
+);
 
-// Existing live league route
-router.get('/:leagueId/live/:gameweek', async (req, res) => {
-  try {
+// Live league standings route
+router.get('/:leagueId/live/:gameweek', 
+  validateIntParams,
+  asyncHandler(async (req, res) => {
     const { leagueId, gameweek } = req.params;
     const limit = parseInt(req.query.limit) || 50;
     const offset = parseInt(req.query.offset) || 0;
     
-    const standingsResponse = await axios.get(`https://fantasy.premierleague.com/api/leagues-classic/${leagueId}/standings/`);
-    const liveResponse = await axios.get(`https://fantasy.premierleague.com/api/event/${gameweek}/live/`);
-    const bootstrapData = await loadBootstrapData();
+    const [standingsResponse, liveResponse, bootstrapData] = await Promise.all([
+      axios.get(`https://fantasy.premierleague.com/api/leagues-classic/${leagueId}/standings/`),
+      axios.get(`https://fantasy.premierleague.com/api/event/${gameweek}/live/`),
+      loadBootstrapData()
+    ]);
 
     const liveData = liveResponse.data.elements;
-    
     const totalEntries = standingsResponse.data.standings.results.length;
     const paginatedResults = standingsResponse.data.standings.results.slice(offset, offset + limit);
     
     const standings = await Promise.all(
       paginatedResults.map(async (entry) => {
-        const picksResponse = await axios.get(`https://fantasy.premierleague.com/api/entry/${entry.entry}/event/${gameweek}/picks/`);
-        const transfersResponse = await axios.get(`https://fantasy.premierleague.com/api/entry/${entry.entry}/transfers/`);
-        const picks = picksResponse.data.picks;
+        const [picksResponse, transfersResponse] = await Promise.all([
+          axios.get(`https://fantasy.premierleague.com/api/entry/${entry.entry}/event/${gameweek}/picks/`),
+          axios.get(`https://fantasy.premierleague.com/api/entry/${entry.entry}/transfers/`)
+        ]);
 
+        const picks = picksResponse.data.picks;
         const transfersForGW = transfersResponse.data.filter(t => t.event === parseInt(gameweek)).length;
         const freeTransfers = 1;
         const extraTransfers = Math.max(0, transfersForGW - freeTransfers);
@@ -87,11 +140,31 @@ router.get('/:leagueId/live/:gameweek', async (req, res) => {
       },
       standings: standings
     });
-  } catch (error) {
-    res.status(500).json({ 
-      error: error.message || 'Error fetching league standings or live data' 
+  })
+);
+
+// Cache clearing route
+router.post('/cache/clear', 
+  asyncHandler(async (req, res) => {
+    const { key } = req.query;
+    
+    if (key) {
+      Object.keys(cache.data)
+        .filter(cacheKey => cacheKey.includes(key))
+        .forEach(cacheKey => {delete cache.data[cacheKey];
+          delete cache.timestamps[cacheKey];
+        });
+    } else {
+      cache.data = {};
+      cache.timestamps = {};
+    }
+
+    res.json({ 
+      status: 'ok', 
+      message: `Cache${key ? ` for pattern "${key}"` : ''} cleared successfully`,
+      clearedEntries: Object.keys(cache.data).length
     });
-  }
-});
+  })
+);
 
 module.exports = router;

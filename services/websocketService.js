@@ -72,7 +72,7 @@ const fetchLiveData = async (gameweek) => {
     // Use our new CORS-friendly endpoint
     try {
       logger.info(`Fetching live data for GW ${gameweek} via proxy`);
-      response = await fetchWithRetry(`${BASE_URL}/fpl-basic/live/${gameweek}`, 2, 1000);
+      response = await fetchWithRetry(`${BASE_URL}/api/fpl/live/${gameweek}`, 2, 1000);
       
       if (!response || !response.data || !Array.isArray(response.data.elements)) {
         throw new Error('Invalid or empty response received from proxy');

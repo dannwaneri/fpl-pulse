@@ -1,110 +1,113 @@
 const axios = require('axios');
 const logger = require('../utils/logger');
-const { Bootstrap, reconnectWithBackoff } = require('../config/db');
+const { Bootstrap } = require('../config/db');
 
-// Enhanced default data with dummy values for basic functionality
+// Enhanced default data with more comprehensive dummy values
 const DEFAULT_BOOTSTRAP_DATA = {
-  events: [{ id: 29, is_current: true, deadline_time: new Date().toISOString() }],
-  teams: [{ id: 1, short_name: 'UNK', name: 'Unknown Team' }],
+  events: [{ 
+    id: 29, 
+    is_current: true, 
+    deadline_time: new Date().toISOString() 
+  }],
+  teams: [{ 
+    id: 1, 
+    short_name: 'UNK', 
+    name: 'Unknown Team' 
+  }],
   elements: [
     {
       id: 1,
       first_name: 'Unknown',
       second_name: 'Player',
+      web_name: 'Unknown Player',
       team: 1,
       element_type: 1, // 1 = Goalkeeper
-      web_name: 'U. Player',
-      total_points: 0
+      now_cost: 40, // 4.0
+      total_points: 0,
+      selected_by_percent: '0.0'
     }
   ]
 };
 
-const delay = (ms) => new Promise(resolve => {
-  const jitter = Math.random() * 300;
-  setTimeout(resolve, ms + jitter);
-});
-
-const loadBootstrapData = async (retries = 3, initialDelayMs = 1000) => {
-  let bootstrapData;
-
+const loadBootstrapData = async (forceRefresh = false, retries = 3) => {
   try {
-    await reconnectWithBackoff();
-    logger.info('MongoDB connection established');
-
-    const cachedDoc = await Bootstrap.findOne({ _id: 'bootstrap:latest' })
-      .sort({ timestamp: -1 })
-      .exec();
-
-    // Loosened cache validation: Accept if elements or teams are present
-    if (cachedDoc && cachedDoc.data && (cachedDoc.data.elements?.length > 0 || cachedDoc.data.teams?.length > 0)) {
-      logger.info('Bootstrap data loaded from MongoDB cache', {
-        elementCount: cachedDoc.data.elements?.length || 0,
-        teamCount: cachedDoc.data.teams?.length || 0
-      });
-      return cachedDoc.data;
-    }
-    logger.info('No valid cached data found in MongoDB');
-
-    for (let i = 0; i < retries; i++) {
-      try {
-        const response = await axios.get('https://fantasy.premierleague.com/api/bootstrap-static/', {
-          timeout: 30000,
-          headers: {
-            'User-Agent': 'Mozilla/5.0',  // Simplified user agent
-            'Accept': 'application/json'  // Only essential headers
-          }
-        });
-        bootstrapData = response.data;
-        logger.info('API response received', { elementCount: bootstrapData.elements?.length || 0 });
-        break;
-      } catch (fetchError) {
-        logger.error(`Fetch attempt ${i + 1}/${retries} failed`, {
-          message: fetchError.message,
-          status: fetchError.response?.status
-        });
-
-        if (i < retries - 1) {
-          const backoff = initialDelayMs * Math.pow(2, i);
-          logger.info(`Retrying after ${backoff}ms`);
-          await delay(backoff);
-          continue;
-        }
-        throw fetchError;
+    // First, try to fetch from FPL API
+    const response = await axios.get('https://fantasy.premierleague.com/api/bootstrap-static/', {
+      timeout: 30000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0',
+        'Accept': 'application/json'
       }
-    }
-
-    await Bootstrap.updateOne(
-      { _id: 'bootstrap:latest' },
-      { $set: { data: bootstrapData, timestamp: Date.now() } },
-      { upsert: true }
-    ).catch(cacheError => {
-      logger.error('Failed to cache bootstrap data', { message: cacheError.message });
     });
 
-    logger.info('Returning fetched bootstrap data', { elementCount: bootstrapData.elements.length });
+    const rawData = response.data;
+
+    // Validate data structure
+    if (!rawData.elements || rawData.elements.length === 0) {
+      throw new Error('No player elements found in bootstrap data');
+    }
+
+    // Normalize data to ensure consistent structure
+    const bootstrapData = {
+      events: rawData.events || [],
+      teams: rawData.teams || [],
+      elements: rawData.elements.map(player => ({
+        id: player.id,
+        first_name: player.first_name || 'Unknown',
+        second_name: player.second_name || 'Player',
+        web_name: player.web_name || `${player.first_name || 'Unknown'} ${player.second_name || 'Player'}`,
+        team: player.team || 1,
+        element_type: player.element_type || 1,
+        now_cost: player.now_cost || 40,
+        total_points: player.total_points || 0,
+        selected_by_percent: player.selected_by_percent || '0.0'
+      }))
+    };
+
+    // Cache in MongoDB
+    await Bootstrap.findOneAndUpdate(
+      { _id: 'bootstrap:latest' },
+      { 
+        data: bootstrapData, 
+        timestamp: new Date() 
+      },
+      { upsert: true }
+    );
+
+    logger.info('Bootstrap data successfully fetched and cached', {
+      elementCount: bootstrapData.elements.length,
+      teamCount: bootstrapData.teams.length,
+      eventCount: bootstrapData.events.length
+    });
+
     return bootstrapData;
 
   } catch (error) {
-    logger.error('Failed to load bootstrap data', { message: error.message });
+    logger.error('Error fetching bootstrap data', { 
+      message: error.message,
+      stack: error.stack
+    });
 
-    if (!bootstrapData) {
-      const fallbackDoc = await Bootstrap.findOne({ _id: 'bootstrap:latest' }).exec();
-      // Loosened validation for fallback as well
-      if (fallbackDoc && fallbackDoc.data && (fallbackDoc.data.elements?.length > 0 || fallbackDoc.data.teams?.length > 0)) {
-        logger.info('Using MongoDB cached data as fallback', {
-          elementCount: fallbackDoc.data.elements?.length || 0,
-          teamCount: fallbackDoc.data.teams?.length || 0
-        });
-        return fallbackDoc.data;
+    // Fallback to cached data
+    try {
+      const cachedDoc = await Bootstrap.findOne({ _id: 'bootstrap:latest' }).exec();
+      if (cachedDoc && cachedDoc.data && cachedDoc.data.elements?.length > 0) {
+        logger.info('Using cached bootstrap data');
+        return cachedDoc.data;
       }
-      logger.info('No valid cache available');
-      logger.warn('Using default data as final fallback');
-      return DEFAULT_BOOTSTRAP_DATA;
+    } catch (cacheError) {
+      logger.error('Error retrieving cached bootstrap data', { 
+        message: cacheError.message 
+      });
     }
 
-    logger.info('Returning API data despite caching failure', { elementCount: bootstrapData.elements.length });
-    return bootstrapData;
+    // Final fallback to default data
+    logger.warn('Using default bootstrap data');
+    return DEFAULT_BOOTSTRAP_DATA;
   }
 };
 
-module.exports = { loadBootstrapData, DEFAULT_BOOTSTRAP_DATA };
+module.exports = { 
+  loadBootstrapData, 
+  DEFAULT_BOOTSTRAP_DATA 
+};

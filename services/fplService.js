@@ -54,22 +54,42 @@ let bootstrapTimestamp = 0;
 
 
 const getBootstrapData = async (forceRefresh = false) => {
-  if (cachedBootstrapData && (Date.now() - bootstrapTimestamp) < CACHE_DURATION_LONG && !forceRefresh) {
-    console.log('Using cached bootstrap data');
-    return cachedBootstrapData;
-  }
-  const rawData = await loadBootstrapData();
-  cachedBootstrapData = {
-    elements: rawData.elements || rawData.players || [],
-    events: rawData.events || [],
-    teams: rawData.teams || [],
-    ...rawData
-  };
-  bootstrapTimestamp = Date.now();
-  console.log('Fetched and cached bootstrap data');
-  return cachedBootstrapData;
-};
+  try {
+    // Check memory cache first
+    if (cachedBootstrapData && !forceRefresh && 
+        (Date.now() - bootstrapTimestamp) < CACHE_DURATION_LONG) {
+      return cachedBootstrapData;
+    }
 
+    // Fetch data
+    const rawData = await loadBootstrapData(forceRefresh);
+
+    // Validate and normalize data
+    cachedBootstrapData = {
+      elements: rawData.elements || [],
+      events: rawData.events || [],
+      teams: rawData.teams || [],
+      ...rawData
+    };
+
+    // Validate elements
+    if (cachedBootstrapData.elements.length === 0) {
+      logger.warn('No elements found in bootstrap data');
+      cachedBootstrapData.elements = DEFAULT_BOOTSTRAP_DATA.elements;
+    }
+
+    bootstrapTimestamp = Date.now();
+    
+    return cachedBootstrapData;
+  } catch (error) {
+    logger.error('Failed to get bootstrap data', { 
+      message: error.message,
+      fallback: 'Using default data'
+    });
+    
+    return DEFAULT_BOOTSTRAP_DATA;
+  }
+};
 
 const getManagerData = async (id) => {
   const cacheKey = `manager:${id}`;
@@ -1343,6 +1363,7 @@ const getCaptaincySuggestions = async (managerId, gameweek) => {
 };
 module.exports = {
   getManagerData,
+  getBootstrapData,
   getPicksData,
   getPlannerData,
   getTop10kStats,

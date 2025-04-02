@@ -10,7 +10,6 @@ const { DEFAULT_BOOTSTRAP_DATA, loadBootstrapData } = require('./services/bootst
 const fplRoutes = require('./routes/fplRoutes');
 const leagueRoutes = require('./routes/leagueRoutes');
 const { setupWebSocket } = require('./services/websocketService');
-const { setupFplProxy } = require('./services/fplProxyService');
 const logger = require('./utils/logger');
 const helmet = require('helmet');
 const compression = require('compression');
@@ -104,7 +103,6 @@ const setupWorker = () => {
   };
 
   // Setup the new FPL proxy service - ADD THIS LINE
-  setupFplProxy(app);
 
   // API Routes
   app.use('/api/fpl', fplRoutes);

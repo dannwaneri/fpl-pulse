@@ -270,7 +270,7 @@ const useFplData = () => {
       const gameweek = data.currentGameweek;
       console.log(`Refreshing live data for ID ${fplId}, gameweek ${gameweek}`);
       
-      const picksResponse = await fetch(getApiUrl(`/fpl-basic/entry/${fplId}/event/${gameweek}/picks`));
+      const picksResponse = await fetch(getApiUrl(`/api/fpl/${fplId}/event/${gameweek}/picks`));
       const picksResult = await picksResponse.json();
       
       if (picksResponse.ok) {
@@ -331,7 +331,7 @@ const useFplData = () => {
       console.log(`Polling for live data: fplId=${fplId}, gameweek=${gameweek}`);
       
       // Use the proxy endpoint instead of direct API access
-      const picksResponse = await fetch(getApiUrl(`/fpl-basic/entry/${fplId}/event/${gameweek}/picks`));
+      const picksResponse = await fetch(getApiUrl(`/api/fpl/${fplId}/event/${gameweek}/picks`));
       if (!picksResponse.ok) {
         throw new Error('Failed to fetch picks data');
       }
@@ -355,7 +355,7 @@ const useFplData = () => {
       });
       
       if (top10kStats) {
-        const top10kResponse = await fetch(getApiUrl(`/fpl-basic/top10k/${gameweek}`));
+        const top10kResponse = await fetch(getApiUrl(`/api/fpl/top10k/${gameweek}`));
         if (top10kResponse.ok) {
           const top10kResult = await top10kResponse.json();
           dispatch({ type: ACTIONS.UPDATE_TOP10K_DATA, payload: top10kResult });
@@ -384,7 +384,7 @@ const useFplData = () => {
     dispatch({ type: ACTIONS.RESET_DATA });
 
     try {
-      const managerResponse = await fetch(getApiUrl(`/fpl-basic/entry/${fplId}`));
+      const managerResponse = await fetch(getApiUrl(`/api/fpl/entry/${fplId}`));
       const managerResult = await managerResponse.json();
       console.log('1. Fetched manager data:', JSON.stringify(managerResult, null, 2));
       
@@ -413,7 +413,7 @@ const useFplData = () => {
       let top10kData = null;
 
       try {
-        const picksResponse = await fetch(getApiUrl(`/fpl-basic/entry/${fplId}/event/${gameweek}/picks`));
+        const picksResponse = await fetch(getApiUrl(`/api/fpl/${fplId}/event/${gameweek}/picks`));
         const picksResult = await picksResponse.json();
         if (picksResponse.ok) {
           picksData = {
@@ -436,8 +436,8 @@ const useFplData = () => {
       }
 
       try {
-        const plannerResponse = await fetch(getApiUrl(`/fpl-basic/entry/${fplId}/planner`));
-        const plannerResult = await plannerResponse.json();
+        const plannerResponse = await fetch(getApiUrl(`/api/fpl/${fplId}/planner`));
+      const plannerResult = await plannerResponse.json();
         if (plannerResponse.ok) {
           plannerData = plannerResult;
         } else {
@@ -448,8 +448,8 @@ const useFplData = () => {
       }
 
       try {
-      const top10kResponse = await fetch(getApiUrl(`/fpl-basic/top10k/${gameweek}`));    
-      const top10kResult = await top10kResponse.json();
+        const top10kResponse = await fetch(getApiUrl(`/api/fpl/top10k/${gameweek}`));
+        const top10kResult = await top10kResponse.json();
         if (top10kResponse.ok) {
           top10kData = top10kResult;
         } else {
