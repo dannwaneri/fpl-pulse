@@ -1,5 +1,6 @@
 const axios = require('axios');
 const { loadBootstrapData } = require('./bootstrapService');
+const FPLAPIProxyService = require('./fplApiProxyService');
 const { TopStats, PicksData, PlannerData } = require('../config/db');
 const managersData = require('../utils/data/managers.json');
 
@@ -97,33 +98,36 @@ const getManagerData = async (id) => {
     console.log(`Memory cache hit for ${cacheKey}`);
     return memoryCache[cacheKey].data;
   }
-
   try {
-    const response = await fetchWithRetry(`https://fantasy.premierleague.com/api/entry/${id}/`);
-    const historyResponse = await fetchWithRetry(`https://fantasy.premierleague.com/api/entry/${id}/history/`);
-    const data = response.data;
-    const chipsUsed = historyResponse.data.chips?.map(chip => chip.name) || [];
+    // Use FPLAPIProxyService for more reliable data fetching
+    const { managerData, historyData } = await FPLAPIProxyService.fetchManagerData(id);
     
-    console.log('Manager data fetched:', { id, leagues: data.leagues?.classic });
+    const chipsUsed = historyData.chips?.map(chip => chip.name) || [];
+    
+    console.log('Manager data fetched:', { 
+      id, 
+      currentGameweek: managerData.current_event,
+      leagues: managerData.leagues?.classic?.length || 0
+    });
     
     const result = {
-      name: `${data.player_first_name} ${data.player_last_name}`,
-      totalPoints: data.summary_overall_points,
-      rank: data.summary_overall_rank,
-      currentGameweek: data.current_event || 1,
-      activeChip: data.active_chip,
+      name: `${managerData.player_first_name} ${managerData.player_last_name}`,
+      totalPoints: managerData.summary_overall_points,
+      rank: managerData.summary_overall_rank,
+      currentGameweek: managerData.current_event || 1,
+      activeChip: managerData.active_chip,
       chipsUsed,
-      assistantManager: data.active_chip === 'assistant_manager' ? {
-        id: data.assistant_manager?.id,
-        name: data.assistant_manager?.name
+      assistantManager: managerData.active_chip === 'assistant_manager' ? {
+        id: managerData.assistant_manager?.id,
+        name: managerData.assistant_manager?.name
       } : null,
-      leagues: Array.isArray(data.leagues?.classic) ? data.leagues.classic : [] // Ensure leagues is an array
+      leagues: Array.isArray(managerData.leagues?.classic) ? managerData.leagues.classic : [] // Ensure leagues is an array
     };
     
     console.log('Processed manager data:', { 
       hasLeagues: !!result.leagues, 
       leaguesLength: result.leagues.length || 0,
-      firstLeague: result.leagues[0] || 'none'
+      currentGameweek: result.currentGameweek
     });
     
     memoryCache[cacheKey] = { data: result, timestamp: Date.now() };
