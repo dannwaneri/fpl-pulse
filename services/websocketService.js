@@ -25,7 +25,7 @@ const fetchLiveData = async (gameweek) => {
     gameweek,
     timestamp: new Date().toISOString()
   });
-  
+
   try {
     // Check if we have fresh data in memory cache
     if (global.liveDataCache[gameweek] && 
@@ -34,27 +34,27 @@ const fetchLiveData = async (gameweek) => {
       logger.info(`Using in-memory cache for GW ${gameweek}`);
       return global.liveDataCache[gameweek];
     }
-    
+
     let liveData;
     let dataSource = 'unknown';
     
     try {
-      // Attempt to fetch from FPL API
+      // Use FPLAPIProxyService which now tries Cloudflare worker first
       liveData = await FPLAPIProxyService.fetchLiveData(gameweek);
-      dataSource = 'primary_api';
+      dataSource = FPLAPIProxyService.getErrorTrackerStatus().usingWorker ? 'worker_proxy' : 'direct_api';
       
-      logger.info('Successfully fetched live data from API', {
+      logger.info('Successfully fetched live data', {
         gameweek,
         elementsCount: liveData.elements?.length || 0,
-        proxyStatus: FPLAPIProxyService.getErrorTrackerStatus().successRate
+        source: dataSource,
+        proxyStatus: FPLAPIProxyService.getErrorTrackerStatus?.() || 'not available'
       });
     } catch (apiError) {
-      logger.warn(`FPL API fetch failed for gameweek ${gameweek}`, {
+      logger.warn(`API fetch failed for gameweek ${gameweek}`, {
         errorMessage: apiError.message,
-        statusCode: apiError.statusCode,
-        proxyStatus: FPLAPIProxyService.getErrorTrackerStatus().successRate
+        statusCode: apiError.response?.status
       });
-      
+
       // Fallback to cached data
       try {
         const cachedBootstrap = await Bootstrap.findOne({ _id: 'bootstrap:latest' }).exec();
@@ -81,105 +81,104 @@ const fetchLiveData = async (gameweek) => {
         dataSource = 'absolute_fallback';
       }
     }
-    
-    // Update global cache with source info
-    const elements = liveData.elements || [];
-    global.liveDataCache[gameweek] = elements;
-    global.liveDataCache[`${gameweek}:timestamp`] = Date.now();
-    global.liveDataCache[`${gameweek}:source`] = dataSource;
-    
-    // Notify WebSocket clients about new data
-    const updatePromises = Array.from(subscriptions.entries())
-      .filter(([_, { gameweek: subGW }]) => subGW === gameweek)
-      .map(async ([client, { fplId }]) => {
-        if (client.readyState !== WebSocket.OPEN) return;
 
-        try {
-          let picksData = memoryCache[`picks:${fplId}:${gameweek}`]?.data 
-            || await getPicksData(fplId, gameweek);
-          
-          updatePicksFromLiveData(fplId, gameweek, elements);
+    // Ensure elements exist
+    const newData = liveData.elements || [];
 
-          const totalLivePoints = picksData.totalLivePoints || 0;
-          const assistantManagerPoints = picksData.assistantManagerPoints || 0;
-          
-          const managerData = await getManagerData(fplId).catch(err => {
-            logger.warn(`getManagerData failed for fplId ${fplId}`, { error: err.message });
-            return { totalPoints: 0, rank: 5000000 };
-          });
+    // Check if data has changed before processing
+    if (JSON.stringify(newData) !== JSON.stringify(global.liveDataCache[gameweek])) {
+      // Update cache with timestamp and source info
+      global.liveDataCache[gameweek] = newData;
+      global.liveDataCache[`${gameweek}:timestamp`] = Date.now();
+      global.liveDataCache[`${gameweek}:source`] = dataSource;
+      
+      const updatedStats = await getTop10kStats(gameweek);
 
-          const liveRank = await estimateLiveRank(
-            totalLivePoints, 
-            managerData.totalPoints, 
-            managerData.rank, 
-            picksData.picks, 
-            assistantManagerPoints
-          ).catch(err => {
-            logger.warn(`estimateLiveRank failed for fplId ${fplId}`, { error: err.message });
-            return null;
-          });
+      // Parallel updates for subscribed clients
+      const updatePromises = Array.from(subscriptions.entries())
+        .filter(([_, { gameweek: subGW }]) => subGW === gameweek)
+        .map(async ([client, { fplId }]) => {
+          if (client.readyState !== WebSocket.OPEN) return;
 
-          // Only send if client is still connected
-          if (client.readyState === WebSocket.OPEN) {
-            client.send(JSON.stringify({
-              type: 'liveUpdate',
-              gameweek,
-              data: elements,
-              fplId,
-              totalLivePoints,
-              liveRank,
-              picks: picksData.picks || [],
-              activeChip: picksData.activeChip,
-              assistantManagerPoints,
-              assistantManager: picksData.assistantManager,
-              dataSource
-            }));
+          try {
+            let picksData = memoryCache[`picks:${fplId}:${gameweek}`]?.data 
+              || await getPicksData(fplId, gameweek);
+            
+            updatePicksFromLiveData(fplId, gameweek, newData);
 
-            const updatedStats = await getTop10kStats(gameweek);
-            client.send(JSON.stringify({
-              type: 'top10kUpdate',
-              gameweek,
-              stats: updatedStats
-            }));
-
-            logger.info(`Sent live update to fplId ${fplId} for GW ${gameweek}`, {
-              dataSource,
-              totalLivePoints
+            const totalLivePoints = picksData.totalLivePoints || 0;
+            const assistantManagerPoints = picksData.assistantManagerPoints || 0;
+            
+            const managerData = await getManagerData(fplId).catch(err => {
+              logger.warn(`getManagerData failed for fplId ${fplId}`, { error: err.message });
+              return { totalPoints: 0, rank: 5000000 };
             });
-          }
-        } catch (updateError) {
-          logger.error(`Error processing update for fplId ${fplId}`, { 
-            error: updateError.message 
-          });
-          
-          if (client.readyState === WebSocket.OPEN) {
-            client.send(JSON.stringify({
-              type: 'error',
-              message: `Failed to process update: ${updateError.message}`
-            }));
-          }
-        }
-      });
 
-    // Wait for all client updates to complete
-    await Promise.allSettled(updatePromises);
-    
-    return elements;
+            const liveRank = await estimateLiveRank(
+              totalLivePoints, 
+              managerData.totalPoints, 
+              managerData.rank, 
+              picksData.picks, 
+              assistantManagerPoints
+            ).catch(err => {
+              logger.warn(`estimateLiveRank failed for fplId ${fplId}`, { error: err.message });
+              return null;
+            });
+
+            // Only send if client is still connected
+            if (client.readyState === WebSocket.OPEN) {
+              client.send(JSON.stringify({
+                type: 'liveUpdate',
+                gameweek,
+                data: newData,
+                fplId,
+                totalLivePoints,
+                liveRank,
+                picks: picksData.picks || [],
+                activeChip: picksData.activeChip,
+                assistantManagerPoints,
+                assistantManager: picksData.assistantManager,
+                dataSource
+              }));
+
+              client.send(JSON.stringify({
+                type: 'top10kUpdate',
+                gameweek,
+                stats: updatedStats
+              }));
+
+              logger.info(`Sent live update to fplId ${fplId} for GW ${gameweek}`, {
+                dataSource,
+                totalLivePoints
+              });
+            }
+          } catch (updateError) {
+            logger.error(`Error processing update for fplId ${fplId}`, { 
+              error: updateError.message 
+            });
+            
+            if (client.readyState === WebSocket.OPEN) {
+              client.send(JSON.stringify({
+                type: 'error',
+                message: `Failed to process update: ${updateError.message}`
+              }));
+            }
+          }
+        });
+
+      await Promise.allSettled(updatePromises);
+    } else {
+      logger.info(`No data changes for GW ${gameweek}, skipping updates`);
+    }
+
+    return newData;
   } catch (error) {
-    logger.error('Comprehensive error in fetchLiveData', {
-      gameweek,
-      errorMessage: error.message,
-      stack: error.stack,
-      proxyStatus: FPLAPIProxyService.getErrorTrackerStatus()
+    logger.error(`Comprehensive fallback triggered for GW ${gameweek}`, { 
+      error: error.message,
+      stack: error.stack
     });
-    
-    // Final fallback
-    const defaultData = DEFAULT_LIVE_DATA.elements;
-    global.liveDataCache[gameweek] = defaultData;
-    global.liveDataCache[`${gameweek}:timestamp`] = Date.now();
-    global.liveDataCache[`${gameweek}:source`] = 'error_fallback';
-    
-    // Notify clients about the error
+
+    // Notify all subscribed clients about the failure
     subscriptions.forEach((_, client) => {
       if (client.readyState === WebSocket.OPEN) {
         client.send(JSON.stringify({
@@ -189,8 +188,15 @@ const fetchLiveData = async (gameweek) => {
         }));
       }
     });
-    
-    return defaultData;
+
+    // Ensure some data exists
+    if (!global.liveDataCache[gameweek]) {
+      global.liveDataCache[gameweek] = DEFAULT_LIVE_DATA.elements;
+      global.liveDataCache[`${gameweek}:timestamp`] = Date.now();
+      global.liveDataCache[`${gameweek}:source`] = 'error_fallback';
+    }
+
+    return global.liveDataCache[gameweek] || DEFAULT_LIVE_DATA.elements;
   }
 };
 
