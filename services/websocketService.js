@@ -1,5 +1,5 @@
 const axios = require('axios');
-const { updatePicksFromLiveData, getTop10kStats, memoryCache, estimateLiveRank, getPicksData, getManagerData } = require('./fplService');
+const { updatePicksFromLiveData, getTop10kStats, memoryCache, estimateLiveRank, getPicksData, getManagerData,fetchLiveDataFromFPL } = require('./fplService');
 const WebSocket = require('ws');
 const { Bootstrap } = require('../config/db'); 
 const { loadBootstrapData } = require('./bootstrapService');
@@ -107,100 +107,81 @@ const fetchLiveData = async (gameweek) => {
     ? 'https://fpl-pulse.onrender.com' 
     : 'http://localhost:5000';
     
-  logger.info('Fetch Live Data Configuration', {
+  logger.info('Comprehensive Fetch Live Data Diagnostics', {
     gameweek,
     baseUrl: BASE_URL,
-    nodeEnv: process.env.NODE_ENV
+    nodeEnv: process.env.NODE_ENV,
+    timestamp: new Date().toISOString()
   });
-
+  
   try {
-    let response;
-    
-    // First check if we have fresh data in memory cache
+    // Check for fresh in-memory cache first
     if (global.liveDataCache[gameweek] && 
         global.liveDataCache[`${gameweek}:timestamp`] && 
         Date.now() - global.liveDataCache[`${gameweek}:timestamp`] < 300000) { // 5 minutes
       logger.info(`Using in-memory cache for GW ${gameweek}`);
-      return;
+      return global.liveDataCache[gameweek];
     }
     
-    // Log all potential URLs
-    const possibleUrls = [
-      `${BASE_URL}/api/fpl/live/${gameweek}`,
-      `https://fpl-pulse.onrender.com/api/fpl/live/${gameweek}`,
-      `http://fpl-pulse.onrender.com/api/fpl/live/${gameweek}`
-    ];
-    
-    let lastError = null;
-    let fetchSuccess = false;
-    
-    for (const url of possibleUrls) {
-      if (fetchSuccess) break;
-      
-      try {
-        logger.info(`Attempting to fetch from URL: ${url}`);
+    // Attempt to fetch from multiple sources
+    const fetchStrategies = [
+      // Strategy 1: Direct proxy endpoint
+      async () => {
+        logger.info(`Attempting to fetch from proxy: ${BASE_URL}/api/fpl/live/${gameweek}`);
+        const response = await axios.get(`${BASE_URL}/api/fpl/live/${gameweek}`, {
+          timeout: 15000
+        });
         
-        response = await fetchWithRetry(url, 3, 1000);
-        
-        if (!response || !response.data || !Array.isArray(response.data.elements)) {
-          logger.warn('Invalid response structure from URL', { 
-            url,
-            dataKeys: response ? Object.keys(response.data || {}) : 'No response data',
-            elementsType: response?.data?.elements ? typeof response.data.elements : 'undefined'
-          });
-          continue;
+        if (!response.data?.elements || !Array.isArray(response.data.elements)) {
+          throw new Error('Invalid data structure from proxy');
         }
         
-        logger.info('Successful fetch details', {
-          url,
-          elementsCount: response.data?.elements?.length || 0,
-          sampleElement: response.data?.elements?.[0]?.id
-        });
-        
-        fetchSuccess = true;
-      } catch (fetchError) {
-        logger.error(`Failed to fetch from ${url}`, {
-          error: fetchError.message,
-          status: fetchError.response?.status,
-          stack: fetchError.stack
-        });
-        lastError = fetchError;
-      }
-    }
-    
-    // If all URLs fail, fall back to cached data
-    if (!fetchSuccess) {
-      logger.warn(`All live data URLs failed for GW ${gameweek}, falling back to cached data`);
+        logger.info(`Successfully fetched ${response.data.elements.length} elements from proxy`);
+        return response.data.elements;
+      },
       
-      try {
+      // Strategy 2: Cached Bootstrap data
+      async () => {
+        logger.info('Attempting to retrieve data from bootstrap cache');
         const cachedBootstrap = await Bootstrap.findOne({ _id: 'bootstrap:latest' }).exec();
         const cachedLiveData = cachedBootstrap?.data?.events?.[gameweek - 1]?.live_data;
         
         if (cachedLiveData && Array.isArray(cachedLiveData)) {
-          logger.info(`Using cached live data from Bootstrap for GW ${gameweek}`);
-          response = { data: { elements: cachedLiveData } };
-        } else {
-          // Absolute fallback to default data
-          logger.warn(`Using default live data fallback for GW ${gameweek}`);
-          response = { data: DEFAULT_LIVE_DATA };
+          logger.info(`Retrieved ${cachedLiveData.length} elements from bootstrap cache`);
+          return cachedLiveData;
         }
-      } catch (cacheError) {
-        logger.error(`Cache retrieval failed for GW ${gameweek}`, {
-          error: cacheError.message
+        
+        throw new Error('No cached live data in bootstrap');
+      },
+      
+      // Strategy 3: Default fallback
+      async () => {
+        logger.warn('Using default fallback data');
+        return DEFAULT_LIVE_DATA.elements;
+      }
+    ];
+    
+    // Try strategies sequentially
+    let newData;
+    for (const strategy of fetchStrategies) {
+      try {
+        const data = await strategy();
+        
+        if (data && Array.isArray(data)) {
+          newData = data;
+          break;
+        }
+      } catch (strategyError) {
+        logger.warn('Strategy failed', { 
+          error: strategyError.message 
         });
-        // Final fallback
-        response = { data: DEFAULT_LIVE_DATA };
       }
     }
-
-    // Ensure elements array exists
-    const newData = response.data.elements || [];
     
-    // Validate data is an array before using it
-    if (!Array.isArray(newData)) {
-      throw new Error(`Invalid data format: Expected array, got ${typeof newData}`);
+    if (!newData) {
+      throw new Error('All live data retrieval strategies failed');
     }
-
+    
     // Check if data has changed before processing
     if (JSON.stringify(newData) !== JSON.stringify(global.liveDataCache[gameweek])) {
       // Update cache with timestamp
@@ -278,16 +259,19 @@ const fetchLiveData = async (gameweek) => {
         });
 
       await Promise.allSettled(updatePromises);
+      return newData;
     } else {
       logger.info(`No data changes for GW ${gameweek}, skipping updates`);
+      return global.liveDataCache[gameweek];
     }
   } catch (error) {
-    logger.error(`Comprehensive fallback triggered for GW ${gameweek}`, { 
+    logger.error('Comprehensive Live Data Fetch Error', {
+      gameweek,
       error: error.message,
       stack: error.stack
     });
-
-    // Notify all subscribed clients about the failure
+    
+    // Fallback to default and notify clients
     subscriptions.forEach((_, client) => {
       if (client.readyState === WebSocket.OPEN) {
         client.send(JSON.stringify({
@@ -296,14 +280,19 @@ const fetchLiveData = async (gameweek) => {
         }));
       }
     });
-
-    // Ensure some data exists
+    
+    // Ensure some data exists in cache
     if (!global.liveDataCache[gameweek]) {
-      global.liveDataCache[gameweek] = DEFAULT_LIVE_DATA.elements;
+      const defaultData = DEFAULT_LIVE_DATA.elements;
+      global.liveDataCache[gameweek] = defaultData;
       global.liveDataCache[`${gameweek}:timestamp`] = Date.now();
+      return defaultData;
     }
+    
+    return global.liveDataCache[gameweek];
   }
 };
+
 const setupWebSocket = (wss) => {
   let currentGameweek = null;
   

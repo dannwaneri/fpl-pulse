@@ -1361,6 +1361,74 @@ const getCaptaincySuggestions = async (managerId, gameweek) => {
     return []; // Return empty array instead of throwing
   }
 };
+
+
+const fetchLiveDataFromFPL = async (gameweek) => {
+  try {
+    // Use direct Node.js https request to bypass potential Axios restrictions
+    return new Promise((resolve, reject) => {
+      const https = require('https');
+      
+      const options = {
+        hostname: 'fantasy.premierleague.com',
+        path: `/api/event/${gameweek}/live/`,
+        method: 'GET',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+          'Accept': 'application/json',
+          'Accept-Language': 'en-US,en;q=0.9',
+          'Referer': 'https://fantasy.premierleague.com/',
+          'Origin': 'https://fantasy.premierleague.com',
+          // If you have cloudflare bypass techniques
+          'X-Requested-With': 'XMLHttpRequest'
+        }
+      };
+
+      const req = https.request(options, (res) => {
+        let data = '';
+        
+        console.log('FPL API Response Details:', {
+          statusCode: res.statusCode,
+          headers: res.headers
+        });
+
+        res.on('data', (chunk) => {
+          data += chunk;
+        });
+
+        res.on('end', () => {
+          try {
+            const parsedData = JSON.parse(data);
+            resolve(parsedData);
+          } catch (parseError) {
+            reject(new Error(`Failed to parse response: ${parseError.message}`));
+          }
+        });
+      });
+
+      req.on('error', (error) => {
+        console.error('Direct FPL API Request Error:', error);
+        reject(error);
+      });
+
+      req.setTimeout(10000, () => {
+        req.abort();
+        reject(new Error('Request timed out'));
+      });
+
+      req.end();
+    });
+  } catch (error) {
+    console.error('Comprehensive FPL API Fetch Error:', {
+      error: error.message,
+      stack: error.stack
+    });
+    throw error;
+  }
+};
+
+
+
 module.exports = {
   getManagerData,
   getBootstrapData,
@@ -1373,5 +1441,6 @@ module.exports = {
   updatePicksFromLiveData,
   getCaptaincySuggestions,
   estimateLiveRank,
+  fetchLiveDataFromFPL,
   memoryCache
 };

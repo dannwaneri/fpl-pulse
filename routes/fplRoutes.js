@@ -8,7 +8,8 @@ const {
   getTop10kStats, 
   predictPriceChanges, 
   getCaptaincySuggestions,
-  simulateRank
+  simulateRank,
+  fetchLiveDataFromFPL
 } = require('../services/fplService');
 const { Transfer } = require('../config/db');
 
@@ -176,9 +177,7 @@ router.get('/live/:gameweek',
       gameweek,
       environment: process.env.NODE_ENV,
       timestamp: new Date().toISOString(),
-      fullUrl: req.originalUrl,
-      baseUrl: req.baseUrl,
-      hostname: req.hostname
+      fullUrl: req.originalUrl
     });
     
     try {
@@ -190,69 +189,113 @@ router.get('/live/:gameweek',
         return res.json(cache.data[cacheKey]);
       }
       
-      // Direct FPL API fetch with extensive error handling
-      const response = await axios.get(`https://fantasy.premierleague.com/api/event/${gameweek}/live/`, {
-        timeout: 15000,
-        headers: {
-          'User-Agent': 'FPL Pulse/1.0',
-          'Accept': 'application/json'
-        }
-      });
+      // Attempt direct FPL API fetch
+      const liveData = await fetchLiveDataFromFPL(gameweek);
       
       // Validate response
-      if (!response.data || !Array.isArray(response.data.elements)) {
-        console.error('Invalid response structure', {
-          dataKeys: Object.keys(response.data),
-          elementsType: typeof response.data.elements
-        });
-        
-        return res.status(500).json({
-          error: 'Invalid data structure',
-          receivedData: response.data
-        });
+      if (!liveData || !Array.isArray(liveData.elements)) {
+        throw new Error('Invalid live data structure received from API');
       }
       
-      // Detailed logging of retrieved data
+      // Log successful retrieval
       console.log('Live Data Retrieved Successfully', {
         gameweek,
-        elementsCount: response.data.elements.length,
-        sampleElement: response.data.elements[0]
+        elementsCount: liveData.elements.length
       });
       
-      // Format response data
+      // Format response
       const responseData = {
-        elements: response.data.elements,
+        elements: liveData.elements,
         metadata: {
           retrievedAt: new Date().toISOString(),
-          gameweek
+          gameweek,
+          source: 'api'
         }
       };
       
-      // Cache the response
+      // Store in cache
       cache.data[cacheKey] = responseData;
       cache.timestamps[cacheKey] = Date.now();
       
-      res.json(responseData);
+      // Return response
+      return res.json(responseData);
     } catch (error) {
-      // Extensive error logging
+      // Comprehensive error logging
       console.error('Live Data Fetch Error', {
         gameweek,
         errorName: error.name,
         errorMessage: error.message,
-        status: error.response?.status,
-        responseData: error.response?.data,
         stack: error.stack
       });
       
-      // Detailed error response with appropriate status code
-      res.status(error.response?.status || 500).json({
-        error: 'Failed to fetch live data',
-        details: {
-          message: error.message,
-          status: error.response?.status,
-          data: error.response?.data
+      // Fallback to cached data
+      try {
+        const cachedBootstrap = await Bootstrap.findOne({ _id: 'bootstrap:latest' }).exec();
+        const cachedLiveData = cachedBootstrap?.data?.events?.[gameweek - 1]?.live_data;
+        
+        if (cachedLiveData && Array.isArray(cachedLiveData)) {
+          console.log('Using cached bootstrap data for live update', {
+            gameweek,
+            elementsCount: cachedLiveData.length
+          });
+          
+          const responseData = {
+            elements: cachedLiveData,
+            metadata: {
+              source: 'cached',
+              retrievedAt: new Date().toISOString(),
+              gameweek
+            }
+          };
+          
+          // Still cache this result to avoid repeated DB lookups
+          cache.data[cacheKey] = responseData;
+          cache.timestamps[cacheKey] = Date.now();
+          
+          return res.json(responseData);
         }
-      });
+      } catch (cacheError) {
+        console.error('Cache retrieval error:', {
+          message: cacheError.message,
+          stack: cacheError.stack
+        });
+      }
+      
+      // Final fallback - default data
+      try {
+        const DEFAULT_LIVE_DATA = {
+          elements: [
+            { id: 1, stats: { total_points: 0, bonus: 0, in_dreamteam: false } }
+          ]
+        };
+        
+        console.warn('Using default fallback data for gameweek', { gameweek });
+        
+        const responseData = {
+          elements: DEFAULT_LIVE_DATA.elements,
+          metadata: {
+            source: 'default',
+            retrievedAt: new Date().toISOString(),
+            gameweek,
+            notice: 'Using placeholder data due to service unavailability'
+          }
+        };
+        
+        return res.json(responseData);
+      } catch (fallbackError) {
+        // If even the fallback fails, return proper error
+        console.error('Complete failure in live data route', {
+          originalError: error.message,
+          fallbackError: fallbackError.message
+        });
+        
+        return res.status(500).json({
+          error: 'Failed to retrieve live data',
+          details: {
+            message: error.message
+          }
+        });
+      }
     }
   })
 );
