@@ -106,6 +106,12 @@ const fetchLiveData = async (gameweek) => {
   const BASE_URL = process.env.NODE_ENV === 'production' 
     ? 'https://fpl-pulse.onrender.com' 
     : 'http://localhost:5000';
+    
+  logger.info('Fetch Live Data Configuration', {
+    gameweek,
+    baseUrl: BASE_URL,
+    nodeEnv: process.env.NODE_ENV
+  });
 
   try {
     let response;
@@ -118,23 +124,54 @@ const fetchLiveData = async (gameweek) => {
       return;
     }
     
-    // Use our new CORS-friendly endpoint
-    try {
-      logger.info(`Fetching live data for GW ${gameweek} via proxy`);
-      response = await fetchWithRetry(`${BASE_URL}/api/fpl/live/${gameweek}`, 2, 1000);
+    // Log all potential URLs
+    const possibleUrls = [
+      `${BASE_URL}/api/fpl/live/${gameweek}`,
+      `https://fpl-pulse.onrender.com/api/fpl/live/${gameweek}`,
+      `http://fpl-pulse.onrender.com/api/fpl/live/${gameweek}`
+    ];
+    
+    let lastError = null;
+    let fetchSuccess = false;
+    
+    for (const url of possibleUrls) {
+      if (fetchSuccess) break;
       
-      if (!response || !response.data || !Array.isArray(response.data.elements)) {
-        throw new Error('Invalid or empty response received from proxy');
+      try {
+        logger.info(`Attempting to fetch from URL: ${url}`);
+        
+        response = await fetchWithRetry(url, 3, 1000);
+        
+        if (!response || !response.data || !Array.isArray(response.data.elements)) {
+          logger.warn('Invalid response structure from URL', { 
+            url,
+            dataKeys: response ? Object.keys(response.data || {}) : 'No response data',
+            elementsType: response?.data?.elements ? typeof response.data.elements : 'undefined'
+          });
+          continue;
+        }
+        
+        logger.info('Successful fetch details', {
+          url,
+          elementsCount: response.data?.elements?.length || 0,
+          sampleElement: response.data?.elements?.[0]?.id
+        });
+        
+        fetchSuccess = true;
+      } catch (fetchError) {
+        logger.error(`Failed to fetch from ${url}`, {
+          error: fetchError.message,
+          status: fetchError.response?.status,
+          stack: fetchError.stack
+        });
+        lastError = fetchError;
       }
+    }
+    
+    // If all URLs fail, fall back to cached data
+    if (!fetchSuccess) {
+      logger.warn(`All live data URLs failed for GW ${gameweek}, falling back to cached data`);
       
-      logger.info(`Successfully fetched live data for GW ${gameweek} via proxy`);
-    } catch (proxyError) {
-      logger.warn(`Proxy fetch failed for GW ${gameweek}`, { 
-        error: proxyError.message,
-        statusCode: proxyError.response?.status
-      });
-      
-      // Fall back to cached data if proxy fails
       try {
         const cachedBootstrap = await Bootstrap.findOne({ _id: 'bootstrap:latest' }).exec();
         const cachedLiveData = cachedBootstrap?.data?.events?.[gameweek - 1]?.live_data;
@@ -246,7 +283,8 @@ const fetchLiveData = async (gameweek) => {
     }
   } catch (error) {
     logger.error(`Comprehensive fallback triggered for GW ${gameweek}`, { 
-      error: error.message 
+      error: error.message,
+      stack: error.stack
     });
 
     // Notify all subscribed clients about the failure

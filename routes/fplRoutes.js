@@ -170,31 +170,88 @@ router.get('/live/:gameweek',
   validateIntParams,
   asyncHandler(async (req, res) => {
     const { gameweek } = req.params;
+    
+    // Comprehensive logging
+    console.log('Live Data Request Received', {
+      gameweek,
+      environment: process.env.NODE_ENV,
+      timestamp: new Date().toISOString(),
+      fullUrl: req.originalUrl,
+      baseUrl: req.baseUrl,
+      hostname: req.hostname
+    });
+    
     try {
-      console.log(`Attempting to fetch live data for gameweek ${gameweek}`);
+      // Check cache first
+      const cacheKey = `live_${gameweek}`;
+      if (cache.data[cacheKey] && 
+          (Date.now() - cache.timestamps[cacheKey]) < cache.ttl.live) {
+        console.log(`Returning cached live data for gameweek ${gameweek}`);
+        return res.json(cache.data[cacheKey]);
+      }
+      
+      // Direct FPL API fetch with extensive error handling
       const response = await axios.get(`https://fantasy.premierleague.com/api/event/${gameweek}/live/`, {
-        timeout: 10000,
+        timeout: 15000,
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+          'User-Agent': 'FPL Pulse/1.0',
+          'Accept': 'application/json'
         }
       });
       
-      console.log(`Live data retrieved for gameweek ${gameweek}`, {
-        elementsCount: response.data.elements?.length || 0
+      // Validate response
+      if (!response.data || !Array.isArray(response.data.elements)) {
+        console.error('Invalid response structure', {
+          dataKeys: Object.keys(response.data),
+          elementsType: typeof response.data.elements
+        });
+        
+        return res.status(500).json({
+          error: 'Invalid data structure',
+          receivedData: response.data
+        });
+      }
+      
+      // Detailed logging of retrieved data
+      console.log('Live Data Retrieved Successfully', {
+        gameweek,
+        elementsCount: response.data.elements.length,
+        sampleElement: response.data.elements[0]
       });
       
-      res.json(response.data);
+      // Format response data
+      const responseData = {
+        elements: response.data.elements,
+        metadata: {
+          retrievedAt: new Date().toISOString(),
+          gameweek
+        }
+      };
+      
+      // Cache the response
+      cache.data[cacheKey] = responseData;
+      cache.timestamps[cacheKey] = Date.now();
+      
+      res.json(responseData);
     } catch (error) {
-      console.error(`Detailed error fetching live data for gameweek ${gameweek}:`, {
-        message: error.message,
+      // Extensive error logging
+      console.error('Live Data Fetch Error', {
+        gameweek,
+        errorName: error.name,
+        errorMessage: error.message,
         status: error.response?.status,
-        data: error.response?.data
+        responseData: error.response?.data,
+        stack: error.stack
       });
       
-      res.status(500).json({ 
-        error: 'Failed to fetch live data', 
-        message: error.message,
-        details: error.response?.data
+      // Detailed error response with appropriate status code
+      res.status(error.response?.status || 500).json({
+        error: 'Failed to fetch live data',
+        details: {
+          message: error.message,
+          status: error.response?.status,
+          data: error.response?.data
+        }
       });
     }
   })
