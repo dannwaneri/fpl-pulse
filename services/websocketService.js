@@ -21,37 +21,86 @@ const delay = (ms) => new Promise(resolve => {
   const jitter = Math.random() * 300;
   setTimeout(resolve, ms + jitter);
 });
-async function fetchWithRetry(url, retries, delayMs) {
+async function fetchWithRetry(url, retries = 3, delayMs = 1000) {
   for (let i = 0; i < retries; i++) {
     try {
-      // No headers approach for internal API calls
-      const response = await axios.get(url, {
-        timeout: 15000
-        // No headers at all for internal calls to our proxy
+      // Log the fetch attempt
+      logger.info(`Fetch attempt ${i + 1}/${retries} for ${url}`, {
+        url,
+        attempt: i + 1,
+        maxRetries: retries
       });
-      
+
+      // Perform the axios get request
+      const response = await axios.get(url, {
+        timeout: 15000, // 15 seconds timeout
+        headers: {
+          'User-Agent': 'FPL Pulse/1.0',
+          'Accept': 'application/json'
+        }
+      });
+
+      // Log successful response
+      logger.info(`Successful fetch for ${url}`, {
+        status: response.status,
+        dataKeys: Object.keys(response.data)
+      });
+
+      // Validate response structure
+      if (!response || !response.data) {
+        throw new Error('Invalid response structure');
+      }
+
       return response;
     } catch (err) {
-      const status = err.response?.status;
+      // Detailed error logging
       logger.error(`Fetch attempt ${i + 1}/${retries} failed for ${url}`, {
-        status,
-        message: err.message
+        errorMessage: err.message,
+        status: err.response?.status,
+        errorDetails: err.response?.data
       });
-      
-      if (status === 403 || status === 429) {
-        const retryAfter = err.response?.headers['retry-after'] 
-          ? Math.max(parseInt(err.response.headers['retry-after'], 10) * 1000, 1000)
-          : 60000;
-        logger.info(`Rate limited or forbidden, waiting ${retryAfter}ms`);
-        await delay(retryAfter);
-        continue;
+
+      // Handle specific error scenarios
+      if (err.response) {
+        switch (err.response.status) {
+          case 403: // Forbidden
+            logger.warn(`Forbidden access for ${url}`);
+            break;
+          case 429: // Rate limited
+            const retryAfter = err.response.headers['retry-after'] 
+              ? Math.max(parseInt(err.response.headers['retry-after'], 10) * 1000, 1000)
+              : 60000;
+            logger.info(`Rate limited, waiting ${retryAfter}ms`);
+            await delay(retryAfter);
+            continue;
+          case 500: // Server error
+          case 502: // Bad Gateway
+          case 503: // Service Unavailable
+          case 504: // Gateway Timeout
+            logger.warn(`Server error for ${url}, status: ${err.response.status}`);
+            break;
+        }
       }
-      
-      if (i === retries - 1) throw err;
-      await delay(delayMs);
+
+      // Exponential backoff with jitter
+      if (i < retries - 1) {
+        const jitteredDelay = delayMs * Math.pow(2, i) + Math.random() * 1000;
+        logger.info(`Waiting ${jitteredDelay}ms before retry`);
+        await delay(jitteredDelay);
+      }
+
+      // Throw on last attempt
+      if (i === retries - 1) {
+        throw err;
+      }
     }
   }
+
+  // Fallback throw if all retries fail
+  throw new Error(`Failed to fetch ${url} after ${retries} attempts`);
 }
+
+
 
 const fetchLiveData = async (gameweek) => {
   const BASE_URL = process.env.NODE_ENV === 'production' 
