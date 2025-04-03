@@ -1,6 +1,6 @@
-const axios = require('axios');
 const logger = require('../utils/logger');
 const { Bootstrap } = require('../config/db');
+const FPLAPIProxyService = require('./fplApiProxyService');
 
 // Enhanced default data with more comprehensive dummy values
 const DEFAULT_BOOTSTRAP_DATA = {
@@ -31,22 +31,29 @@ const DEFAULT_BOOTSTRAP_DATA = {
 
 const loadBootstrapData = async (forceRefresh = false, retries = 3) => {
   try {
-    // First, try to fetch from FPL API
-    const response = await axios.get('https://fantasy.premierleague.com/api/bootstrap-static/', {
-      timeout: 30000,
-      headers: {
-        'User-Agent': 'Mozilla/5.0',
-        'Accept': 'application/json'
+    // Check if we can use cached data (unless forced refresh is requested)
+    if (!forceRefresh) {
+      try {
+        const cachedDoc = await Bootstrap.findOne({ _id: 'bootstrap:latest' }).exec();
+        if (cachedDoc && cachedDoc.data && cachedDoc.data.elements?.length > 0) {
+          logger.info('Using cached bootstrap data');
+          return cachedDoc.data;
+        }
+      } catch (cacheError) {
+        logger.error('Error retrieving cached bootstrap data', { 
+          message: cacheError.message 
+        });
       }
-    });
-
-    const rawData = response.data;
-
+    }
+    
+    // Use FPLAPIProxyService for more reliable data fetching
+    const rawData = await FPLAPIProxyService.fetchBootstrapData();
+    
     // Validate data structure
     if (!rawData.elements || rawData.elements.length === 0) {
       throw new Error('No player elements found in bootstrap data');
     }
-
+    
     // Normalize data to ensure consistent structure
     const bootstrapData = {
       events: rawData.events || [],
@@ -63,7 +70,7 @@ const loadBootstrapData = async (forceRefresh = false, retries = 3) => {
         selected_by_percent: player.selected_by_percent || '0.0'
       }))
     };
-
+    
     // Cache in MongoDB
     await Bootstrap.findOneAndUpdate(
       { _id: 'bootstrap:latest' },
@@ -73,21 +80,20 @@ const loadBootstrapData = async (forceRefresh = false, retries = 3) => {
       },
       { upsert: true }
     );
-
+    
     logger.info('Bootstrap data successfully fetched and cached', {
       elementCount: bootstrapData.elements.length,
       teamCount: bootstrapData.teams.length,
       eventCount: bootstrapData.events.length
     });
-
+    
     return bootstrapData;
-
   } catch (error) {
     logger.error('Error fetching bootstrap data', { 
       message: error.message,
       stack: error.stack
     });
-
+    
     // Fallback to cached data
     try {
       const cachedDoc = await Bootstrap.findOne({ _id: 'bootstrap:latest' }).exec();
@@ -100,7 +106,7 @@ const loadBootstrapData = async (forceRefresh = false, retries = 3) => {
         message: cacheError.message 
       });
     }
-
+    
     // Final fallback to default data
     logger.warn('Using default bootstrap data');
     return DEFAULT_BOOTSTRAP_DATA;

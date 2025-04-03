@@ -84,6 +84,67 @@ class FPLAPIProxyService {
     }
   }
 
+  async fetchBootstrapData() {
+    this.errorTracker.totalAttempts++;
+    
+    // Comprehensive logging before request
+    this.logger.info('Attempting to fetch bootstrap data', {
+      timestamp: new Date().toISOString(),
+      attemptCount: this.errorTracker.totalAttempts
+    });
+    
+    try {
+      // First attempt: Try the Cloudflare Worker proxy
+      try {
+        this.logger.info(`Attempting to fetch bootstrap via worker: ${this.baseURL}/fpl-proxy/bootstrap-static/`);
+        
+        const workerResponse = await axios.get(`${this.baseURL}/fpl-proxy/bootstrap-static/`, {
+          timeout: 15000,
+          headers: {
+            'User-Agent': 'FPL Pulse/1.0',
+            'Accept': 'application/json'
+          }
+        });
+        
+        // Validate worker response
+        if (workerResponse.data && Array.isArray(workerResponse.data.elements)) {
+          this.logger.info('Successfully fetched bootstrap data via worker', {
+            elementsCount: workerResponse.data.elements.length,
+            teamsCount: workerResponse.data.teams.length,
+            eventsCount: workerResponse.data.events.length
+          });
+          
+          this.errorTracker.successfulAttempts++;
+          return workerResponse.data;
+        } else {
+          throw new Error('Invalid data structure from worker');
+        }
+      } catch (workerError) {
+        // Log worker error and try direct approach
+        this.logger.warn('Worker fetch failed for bootstrap data, attempting direct fetch', {
+          error: workerError.message,
+          status: workerError.response?.status
+        });
+        
+        // Second attempt: Try direct FPL API with retry logic
+        const response = await this.fetchWithRetry(`${this.directURL}/bootstrap-static/`);
+        
+        this.logger.info('Bootstrap data retrieved successfully via direct API', {
+          elementsCount: response.data.elements?.length || 0,
+          teamsCount: response.data.teams?.length || 0
+        });
+        
+        this.errorTracker.successfulAttempts++;
+        return response.data;
+      }
+    } catch (error) {
+      // Error tracking and logging
+      this.errorTracker.failedAttempts++;
+      this._trackError(error, 'bootstrap');
+      throw error;
+    }
+  }
+
   async fetchWithRetry(url, retries = 3, delayMs = 1000) {
     const delay = (ms) => new Promise(resolve => {
       const jitter = Math.random() * 300;
@@ -140,13 +201,24 @@ class FPLAPIProxyService {
           dataKeys: Object.keys(response.data)
         });
         
-        // Validate response structure
+        // Validate response structure based on endpoint type
         if (!response || !response.data) {
           throw new Error('Invalid response structure');
         }
         
-        if (!response.data.elements || !Array.isArray(response.data.elements)) {
-          throw new Error('Invalid elements structure in response');
+        // For live data endpoints
+        if (url.includes('/live/')) {
+          if (!response.data.elements || !Array.isArray(response.data.elements)) {
+            throw new Error('Invalid elements structure in response');
+          }
+        }
+        
+        // For bootstrap data endpoints
+        if (url.includes('bootstrap-static')) {
+          if (!response.data.elements || !Array.isArray(response.data.elements) || 
+              !response.data.teams || !Array.isArray(response.data.teams)) {
+            throw new Error('Invalid bootstrap data structure in response');
+          }
         }
         
         return response;
@@ -213,11 +285,11 @@ class FPLAPIProxyService {
     return userAgents[Math.floor(Math.random() * userAgents.length)];
   }
 
-  _trackError(error, gameweek) {
+  _trackError(error, context) {
     // Maintain a rolling log of recent errors
     const errorEntry = {
       timestamp: new Date().toISOString(),
-      gameweek,
+      context,
       message: error.message,
       status: error.response?.status,
       type: error.name
