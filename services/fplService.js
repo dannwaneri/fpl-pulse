@@ -320,15 +320,9 @@ const identifyDifferentials = (picks, top10kStats, managerRank) => {
     const isDifferential = nearRankEO < nearRankEOThreshold || top10kEO < top10kEOThreshold;
     return { ...pick, isDifferential };
   });
-};
+}
 
-// Helper function to calculate transfer penalty
-const calculateTransferPenalty = (transfers, gameweek) => {
-  const transfersForGW = transfers.filter(t => t.event === gameweek).length;
-  const freeTransfers = Math.min(2, transfers.length > 0 ? transfers[transfers.length - 1].event_transfers || 1 : 1);
-  const extraTransfers = Math.max(0, transfersForGW - freeTransfers);
-  return extraTransfers * -4;
-};
+
 
 // Enhanced getPicksData with count in events and robust teamMap
 const getPicksData = async (id, gameweek) => {
@@ -346,19 +340,20 @@ const getPicksData = async (id, gameweek) => {
   }
 
   try {
-    const [picksResponse, liveResponse, managerResponse, transfersResponse] = await Promise.all([
-      fetchWithRetry(`https://fantasy.premierleague.com/api/entry/${id}/event/${gameweek}/picks/`),
-      fetchWithRetry(`https://fantasy.premierleague.com/api/event/${gameweek}/live/`),
-      fetchWithRetry(`https://fantasy.premierleague.com/api/entry/${id}/`),
-      fetchWithRetry(`https://fantasy.premierleague.com/api/entry/${id}/transfers/`).catch(err => {
+    // Use FPLAPIProxyService for more reliable data fetching
+    const [picksData, liveData, managerData, transfersData] = await Promise.all([
+      FPLAPIProxyService.fetchPicksData(id, gameweek),
+      FPLAPIProxyService.fetchLiveData(gameweek),
+      FPLAPIProxyService.fetchManagerData(id).then(data => data.managerData),
+      FPLAPIProxyService.fetchTransfersData(id).catch(err => {
         console.warn(`Failed to fetch transfers for ID ${id}, GW ${gameweek}:`, err.message);
-        return { data: [] };
+        return []; // Default to empty array if transfers fetch fails
       })
     ]);
+    
     let bootstrapData = await getBootstrapData();
-
     // Refresh bootstrap if players are missing
-    const missingPlayers = picksResponse.data.picks.filter(pick => 
+    const missingPlayers = picksData.picks.filter(pick => 
       !bootstrapData.elements.some(el => el.id === pick.element)
     );
     if (missingPlayers.length > 0) {
@@ -366,13 +361,13 @@ const getPicksData = async (id, gameweek) => {
       bootstrapData = await getBootstrapData(true); // Force refresh
     }
 
-    const liveData = liveResponse.data.elements;
-    const managerRank = managerResponse.data.summary_overall_rank || 5000000;
-    const seasonPoints = managerResponse.data.summary_overall_points || 0;
+    const liveElements = liveData.elements;
+    const managerRank = managerData.summary_overall_rank || 5000000;
+    const seasonPoints = managerData.summary_overall_points || 0;
     const totalManagers = 10000000;
     const rankFactor = Math.min(1, Math.max(0.5, 1 - (managerRank / totalManagers)));
 
-    const activeChip = picksResponse.data.active_chip; // e.g., "wildcard", "3cap", "bboost", "freehit", "assistant_manager"
+    const activeChip = picksData.active_chip; // e.g., "wildcard", "3cap", "bboost", "freehit", "assistant_manager"
 
     // Enhanced team ID to short_name mapping
     const teamMap = Array.isArray(bootstrapData.teams) && bootstrapData.teams.length > 0
@@ -382,9 +377,9 @@ const getPicksData = async (id, gameweek) => {
         }, {})
       : {};
 
-    const picks = picksResponse.data.picks.map(pick => {
+    const picks = picksData.picks.map(pick => {
       const player = bootstrapData.elements.find(el => el.id === pick.element);
-      const liveStats = liveData.find(el => el.id === pick.element)?.stats || {};
+      const liveStats = liveElements.find(el => el.id === pick.element)?.stats || {};
       
       const positionMap = { 1: 'GK', 2: 'DEF', 3: 'MID', 4: 'FWD' };
       const ownership = player ? parseFloat(player.selected_by_percent) : 0;
@@ -490,7 +485,7 @@ const getPicksData = async (id, gameweek) => {
     const captain = starters.find(p => p.multiplier > 1);
     const viceCaptain = bench.find(p => p.multiplier > 1) || starters.find(p => p.multiplier > 1 && p !== captain);
 
-    let autosubs = picksResponse.data.automatic_subs || [];
+    let autosubs = picksData.automatic_subs || [];
     // Validate autosubs against picks
     autosubs.forEach(sub => {
       const inPlayer = picks.some(p => p.playerId === sub.in);
@@ -537,8 +532,16 @@ const getPicksData = async (id, gameweek) => {
       );
     }
 
-    const transferPenalty = (activeChip === 'wildcard' || activeChip === 'freehit') ? 0 : 
-                           calculateTransferPenalty(transfersResponse.data, gameweek);
+    // Calculate transfer penalty - updated to use transfersData
+    let transferPenalty = 0;
+    if (activeChip !== 'wildcard' && activeChip !== 'freehit') {
+      const transfersForGW = Array.isArray(transfersData) ? 
+        transfersData.filter(t => t.event === parseInt(gameweek)).length : 0;
+      const freeTransfers = Math.min(2, transfersData.length > 0 ? 
+        transfersData[transfersData.length - 1].event_transfers || 1 : 1);
+      const extraTransfers = Math.max(0, transfersForGW - freeTransfers);
+      transferPenalty = extraTransfers * -4;
+    }
 
     let totalLivePoints = adjustedPicks.reduce((sum, pick) => 
       activeChip === 'bboost' ? sum + pick.livePoints : sum + (pick.multiplier > 0 ? pick.livePoints : 0), 0
@@ -547,10 +550,10 @@ const getPicksData = async (id, gameweek) => {
     let assistantManagerPoints = 0;
     if (activeChip === 'assistant_manager') {
       try {
-        const managerId = picksResponse.data.assistant_manager?.id;
+        const managerId = picksData.assistant_manager?.id;
         if (managerId) {
           const teamId = bootstrapData.teams.find(t => t.manager_id === managerId)?.id;
-          assistantManagerPoints = calculateAssistantPoints(picksResponse.data.assistant_manager, liveResponse.data, gameweek);
+          assistantManagerPoints = calculateAssistantPoints(picksData.assistant_manager, liveData, gameweek);
           totalLivePoints += assistantManagerPoints;
         }
       } catch (err) {
@@ -572,7 +575,7 @@ const getPicksData = async (id, gameweek) => {
       liveRank,
       assistantManagerPoints: activeChip === 'assistant_manager' ? assistantManagerPoints : null,
       activeChip,
-      assistantManager: activeChip === 'assistant_manager' ? picksResponse.data.assistant_manager : null
+      assistantManager: activeChip === 'assistant_manager' ? picksData.assistant_manager : null
     };
 
     console.log('getPicksData result:', result);
@@ -600,6 +603,7 @@ const getPicksData = async (id, gameweek) => {
     };
   }
 };
+
 
 // Updated updatePicksFromLiveData function to match getPicksData logic
 const updatePicksFromLiveData = (id, gameweek, liveData) => {

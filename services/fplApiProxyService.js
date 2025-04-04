@@ -229,6 +229,400 @@ class FPLAPIProxyService {
     }
   }
 
+  // Fetch picks data for a specific manager and gameweek
+  async fetchPicksData(managerId, gameweek) {
+    this.errorTracker.totalAttempts++;
+    
+    // Comprehensive logging before request
+    this.logger.info('Attempting to fetch picks data', {
+      managerId,
+      gameweek,
+      timestamp: new Date().toISOString(),
+      attemptCount: this.errorTracker.totalAttempts
+    });
+    
+    try {
+      // First attempt: Try the Cloudflare Worker proxy
+      try {
+        this.logger.info(`Attempting to fetch picks via worker: ${this.baseURL}/fpl-proxy/entry/${managerId}/event/${gameweek}/picks/`);
+        
+        const workerResponse = await axios.get(`${this.baseURL}/fpl-proxy/entry/${managerId}/event/${gameweek}/picks/`, {
+          timeout: 15000,
+          headers: {
+            'User-Agent': 'FPL Pulse/1.0',
+            'Accept': 'application/json'
+          }
+        });
+        
+        // Validate worker response
+        if (workerResponse.data && Array.isArray(workerResponse.data.picks)) {
+          this.logger.info('Successfully fetched picks data via worker', {
+            managerId,
+            gameweek,
+            picksCount: workerResponse.data.picks.length,
+            activeChip: workerResponse.data.active_chip
+          });
+          
+          this.errorTracker.successfulAttempts++;
+          return workerResponse.data;
+        } else {
+          throw new Error('Invalid picks data structure from worker');
+        }
+      } catch (workerError) {
+        // Log worker error and try direct approach
+        this.logger.warn('Worker fetch failed for picks data, attempting direct fetch', {
+          managerId,
+          gameweek,
+          error: workerError.message,
+          status: workerError.response?.status
+        });
+        
+        // Second attempt: Try direct FPL API with retry logic
+        const response = await this.fetchWithRetry(`${this.directURL}/entry/${managerId}/event/${gameweek}/picks/`);
+        
+        this.logger.info('Picks data retrieved successfully via direct API', {
+          managerId,
+          gameweek,
+          picksCount: response.data.picks?.length || 0
+        });
+        
+        this.errorTracker.successfulAttempts++;
+        return response.data;
+      }
+    } catch (error) {
+      // Error tracking and logging
+      this.errorTracker.failedAttempts++;
+      this._trackError(error, `picks_${managerId}_${gameweek}`);
+      throw error;
+    }
+  }
+
+  // Fetch fixtures data for a specific gameweek
+  async fetchFixtures(gameweek) {
+    this.errorTracker.totalAttempts++;
+    
+    // Comprehensive logging before request
+    this.logger.info('Attempting to fetch fixtures data', {
+      gameweek,
+      timestamp: new Date().toISOString(),
+      attemptCount: this.errorTracker.totalAttempts
+    });
+    
+    try {
+      // First attempt: Try the Cloudflare Worker proxy
+      try {
+        this.logger.info(`Attempting to fetch fixtures via worker: ${this.baseURL}/fpl-proxy/fixtures/?event=${gameweek}`);
+        
+        const workerResponse = await axios.get(`${this.baseURL}/fpl-proxy/fixtures/?event=${gameweek}`, {
+          timeout: 15000,
+          headers: {
+            'User-Agent': 'FPL Pulse/1.0',
+            'Accept': 'application/json'
+          }
+        });
+        
+        // Validate worker response
+        if (workerResponse.data && Array.isArray(workerResponse.data)) {
+          this.logger.info('Successfully fetched fixtures data via worker', {
+            gameweek,
+            fixturesCount: workerResponse.data.length
+          });
+          
+          this.errorTracker.successfulAttempts++;
+          return workerResponse.data;
+        } else {
+          throw new Error('Invalid fixtures data structure from worker');
+        }
+      } catch (workerError) {
+        // Log worker error and try direct approach
+        this.logger.warn('Worker fetch failed for fixtures data, attempting direct fetch', {
+          gameweek,
+          error: workerError.message,
+          status: workerError.response?.status
+        });
+        
+        // Second attempt: Try direct FPL API with retry logic
+        const response = await this.fetchWithRetry(`${this.directURL}/fixtures/?event=${gameweek}`);
+        
+        this.logger.info('Fixtures data retrieved successfully via direct API', {
+          gameweek,
+          fixturesCount: response.data?.length || 0
+        });
+        
+        this.errorTracker.successfulAttempts++;
+        return response.data;
+      }
+    } catch (error) {
+      // Error tracking and logging
+      this.errorTracker.failedAttempts++;
+      this._trackError(error, `fixtures_${gameweek}`);
+      throw error;
+    }
+  }
+
+  // Fetch league standings data
+  async fetchLeagueStandings(leagueId) {
+    this.errorTracker.totalAttempts++;
+    
+    // Comprehensive logging before request
+    this.logger.info('Attempting to fetch league standings', {
+      leagueId,
+      timestamp: new Date().toISOString(),
+      attemptCount: this.errorTracker.totalAttempts
+    });
+    
+    try {
+      // First attempt: Try the Cloudflare Worker proxy
+      try {
+        this.logger.info(`Attempting to fetch league standings via worker: ${this.baseURL}/fpl-proxy/leagues-classic/${leagueId}/standings/`);
+        
+        const workerResponse = await axios.get(`${this.baseURL}/fpl-proxy/leagues-classic/${leagueId}/standings/`, {
+          timeout: 15000,
+          headers: {
+            'User-Agent': 'FPL Pulse/1.0',
+            'Accept': 'application/json'
+          }
+        });
+        
+        // Validate worker response
+        if (workerResponse.data && workerResponse.data.standings && Array.isArray(workerResponse.data.standings.results)) {
+          this.logger.info('Successfully fetched league standings via worker', {
+            leagueId,
+            leagueName: workerResponse.data.league?.name,
+            entriesCount: workerResponse.data.standings.results.length
+          });
+          
+          this.errorTracker.successfulAttempts++;
+          return workerResponse.data;
+        } else {
+          throw new Error('Invalid league standings structure from worker');
+        }
+      } catch (workerError) {
+        // Log worker error and try direct approach
+        this.logger.warn('Worker fetch failed for league standings, attempting direct fetch', {
+          leagueId,
+          error: workerError.message,
+          status: workerError.response?.status
+        });
+        
+        // Second attempt: Try direct FPL API with retry logic
+        const response = await this.fetchWithRetry(`${this.directURL}/leagues-classic/${leagueId}/standings/`);
+        
+        this.logger.info('League standings retrieved successfully via direct API', {
+          leagueId,
+          leagueName: response.data.league?.name,
+          entriesCount: response.data.standings?.results?.length || 0
+        });
+        
+        this.errorTracker.successfulAttempts++;
+        return response.data;
+      }
+    } catch (error) {
+      // Error tracking and logging
+      this.errorTracker.failedAttempts++;
+      this._trackError(error, `league_${leagueId}`);
+      throw error;
+    }
+  }
+
+  // Fetch player summary data
+  async fetchPlayerSummary(playerId) {
+    this.errorTracker.totalAttempts++;
+    
+    // Comprehensive logging before request
+    this.logger.info('Attempting to fetch player summary', {
+      playerId,
+      timestamp: new Date().toISOString(),
+      attemptCount: this.errorTracker.totalAttempts
+    });
+    
+    try {
+      // First attempt: Try the Cloudflare Worker proxy
+      try {
+        this.logger.info(`Attempting to fetch player summary via worker: ${this.baseURL}/fpl-proxy/element-summary/${playerId}/`);
+        
+        const workerResponse = await axios.get(`${this.baseURL}/fpl-proxy/element-summary/${playerId}/`, {
+          timeout: 15000,
+          headers: {
+            'User-Agent': 'FPL Pulse/1.0',
+            'Accept': 'application/json'
+          }
+        });
+        
+        // Validate worker response
+        if (workerResponse.data && Array.isArray(workerResponse.data.history)) {
+          this.logger.info('Successfully fetched player summary via worker', {
+            playerId,
+            fixturesCount: workerResponse.data.fixtures?.length || 0,
+            historyCount: workerResponse.data.history?.length || 0
+          });
+          
+          this.errorTracker.successfulAttempts++;
+          return workerResponse.data;
+        } else {
+          throw new Error('Invalid player summary structure from worker');
+        }
+      } catch (workerError) {
+        // Log worker error and try direct approach
+        this.logger.warn('Worker fetch failed for player summary, attempting direct fetch', {
+          playerId,
+          error: workerError.message,
+          status: workerError.response?.status
+        });
+        
+        // Second attempt: Try direct FPL API with retry logic
+        const response = await this.fetchWithRetry(`${this.directURL}/element-summary/${playerId}/`);
+        
+        this.logger.info('Player summary retrieved successfully via direct API', {
+          playerId,
+          fixturesCount: response.data.fixtures?.length || 0,
+          historyCount: response.data.history?.length || 0
+        });
+        
+        this.errorTracker.successfulAttempts++;
+        return response.data;
+      }
+    } catch (error) {
+      // Error tracking and logging
+      this.errorTracker.failedAttempts++;
+      this._trackError(error, `player_${playerId}`);
+      throw error;
+    }
+  }
+  
+  // Fetch transfers data for a manager
+  async fetchTransfersData(managerId) {
+    this.errorTracker.totalAttempts++;
+    
+    // Comprehensive logging before request
+    this.logger.info('Attempting to fetch transfers data', {
+      managerId,
+      timestamp: new Date().toISOString(),
+      attemptCount: this.errorTracker.totalAttempts
+    });
+    
+    try {
+      // First attempt: Try the Cloudflare Worker proxy
+      try {
+        this.logger.info(`Attempting to fetch transfers via worker: ${this.baseURL}/fpl-proxy/entry/${managerId}/transfers/`);
+        
+        const workerResponse = await axios.get(`${this.baseURL}/fpl-proxy/entry/${managerId}/transfers/`, {
+          timeout: 15000,
+          headers: {
+            'User-Agent': 'FPL Pulse/1.0',
+            'Accept': 'application/json'
+          }
+        });
+        
+        // Validate worker response
+        if (workerResponse.data && Array.isArray(workerResponse.data)) {
+          this.logger.info('Successfully fetched transfers data via worker', {
+            managerId,
+            transfersCount: workerResponse.data.length
+          });
+          
+          this.errorTracker.successfulAttempts++;
+          return workerResponse.data;
+        } else {
+          throw new Error('Invalid transfers data structure from worker');
+        }
+      } catch (workerError) {
+        // Log worker error and try direct approach
+        this.logger.warn('Worker fetch failed for transfers data, attempting direct fetch', {
+          managerId,
+          error: workerError.message,
+          status: workerError.response?.status
+        });
+        
+        // Second attempt: Try direct FPL API with retry logic
+        const response = await this.fetchWithRetry(`${this.directURL}/entry/${managerId}/transfers/`);
+        
+        this.logger.info('Transfers data retrieved successfully via direct API', {
+          managerId,
+          transfersCount: response.data?.length || 0
+        });
+        
+        this.errorTracker.successfulAttempts++;
+        return response.data;
+      }
+    } catch (error) {
+      // Error tracking and logging
+      this.errorTracker.failedAttempts++;
+      this._trackError(error, `transfers_${managerId}`);
+      throw error;
+    }
+  }
+  
+  // Fetch player history data
+  async fetchPlayerHistory(playerId) {
+    this.errorTracker.totalAttempts++;
+    
+    // Comprehensive logging before request
+    this.logger.info('Attempting to fetch player history', {
+      playerId,
+      timestamp: new Date().toISOString(),
+      attemptCount: this.errorTracker.totalAttempts
+    });
+    
+    try {
+      // First attempt: Try the Cloudflare Worker proxy
+      try {
+        this.logger.info(`Attempting to fetch player history via worker: ${this.baseURL}/fpl-proxy/element-summary/${playerId}/`);
+        
+        const workerResponse = await axios.get(`${this.baseURL}/fpl-proxy/element-summary/${playerId}/`, {
+          timeout: 15000,
+          headers: {
+            'User-Agent': 'FPL Pulse/1.0',
+            'Accept': 'application/json'
+          }
+        });
+        
+        // Validate worker response
+        if (workerResponse.data && 
+           (Array.isArray(workerResponse.data.history) || Array.isArray(workerResponse.data.fixtures))) {
+          this.logger.info('Successfully fetched player history via worker', {
+            playerId,
+            historyEntries: workerResponse.data.history?.length || 0,
+            fixturesCount: workerResponse.data.fixtures?.length || 0
+          });
+          
+          this.errorTracker.successfulAttempts++;
+          return workerResponse.data;
+        } else {
+          throw new Error('Invalid player history data structure from worker');
+        }
+      } catch (workerError) {
+        // Log worker error and try direct approach
+        this.logger.warn('Worker fetch failed for player history, attempting direct fetch', {
+          playerId,
+          error: workerError.message,
+          status: workerError.response?.status
+        });
+        
+        // Second attempt: Try direct FPL API with retry logic
+        const response = await this.fetchWithRetry(`${this.directURL}/element-summary/${playerId}/`);
+        
+        if (!response.data || (!Array.isArray(response.data.history) && !Array.isArray(response.data.fixtures))) {
+          throw new Error('Invalid player history data structure from direct API');
+        }
+        
+        this.logger.info('Player history retrieved successfully via direct API', {
+          playerId,
+          historyEntries: response.data.history?.length || 0,
+          fixturesCount: response.data.fixtures?.length || 0
+        });
+        
+        this.errorTracker.successfulAttempts++;
+        return response.data;
+      }
+    } catch (error) {
+      // Error tracking and logging
+      this.errorTracker.failedAttempts++;
+      this._trackError(error, `player_history_${playerId}`);
+      throw error;
+    }
+  }
+
   async fetchWithRetry(url, retries = 3, delayMs = 1000) {
     const delay = (ms) => new Promise(resolve => {
       const jitter = Math.random() * 300;
