@@ -1,7 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const axios = require('axios');
-const { loadBootstrapData } = require('../services/bootstrapService');
+const { loadBootstrapData} = require('../services/bootstrapService');
 const FPLAPIProxyService = require('../services/fplApiProxyService');
 
 // Middleware to validate integer parameters
@@ -55,6 +54,61 @@ const asyncHandler = (fn) => (req, res, next) => {
     });
   });
 };
+
+// Fixtures route
+router.get('/fixtures/:gameweek', 
+  validateIntParams,
+  asyncHandler(async (req, res) => {
+    const { gameweek } = req.params;
+    
+    try {
+      // Check cache first
+      const cacheKey = `fixtures_${gameweek}`;
+      if (cache && cache.data && cache.data[cacheKey] && 
+          (Date.now() - cache.timestamps[cacheKey]) < cache.ttl.fixtures) {
+        console.log(`Returning cached fixtures data for gameweek ${gameweek}`);
+        return res.json(cache.data[cacheKey]);
+      }
+      
+      // Use FPLAPIProxyService for more reliable data fetching
+      const [fixturesData, liveData] = await Promise.all([
+        FPLAPIProxyService.fetchFixtures(gameweek),
+        FPLAPIProxyService.fetchLiveData(gameweek)
+      ]);
+      
+      // Process fixtures with live data
+      const enrichedFixtures = fixturesData.map(fixture => ({
+        ...fixture,
+        homeTeamBonus: liveData.elements
+          .filter(el => el.team === fixture.team_h)
+          .reduce((sum, player) => sum + (player.stats.bonus || 0), 0),
+        awayTeamBonus: liveData.elements
+          .filter(el => el.team === fixture.team_a)
+          .reduce((sum, player) => sum + (player.stats.bonus || 0), 0)
+      }));
+
+      // Cache the processed data
+      if (cache && cache.data) {
+        cache.data[cacheKey] = enrichedFixtures;
+        cache.timestamps[cacheKey] = Date.now();
+      }
+
+      res.json(enrichedFixtures);
+    } catch (error) {
+      console.error(`Error fetching fixtures for gameweek ${gameweek}:`, {
+        error: error.message, 
+        stack: error.stack
+      });
+      
+      res.status(500).json({ 
+        error: 'Failed to retrieve fixtures data', 
+        message: process.env.NODE_ENV === 'production' 
+          ? 'An unexpected error occurred' 
+          : error.message 
+      });
+    }
+  })
+);
 
 // Live league standings route
 router.get('/:leagueId/live/:gameweek', 
