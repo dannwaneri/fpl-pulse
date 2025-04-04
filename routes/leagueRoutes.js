@@ -3,7 +3,7 @@ const router = express.Router();
 const { loadBootstrapData} = require('../services/bootstrapService');
 const FPLAPIProxyService = require('../services/fplApiProxyService');
 
-// Middleware to validate integer parameters
+
 const validateIntParams = (req, res, next) => {
   // Validate league ID parameter
   if (req.params.leagueId !== undefined) {
