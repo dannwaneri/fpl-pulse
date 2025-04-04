@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const axios = require('axios');
 const { loadBootstrapData } = require('../services/bootstrapService');
+const FPLAPIProxyService = require('../services/fplApiProxyService');
 
 // Middleware to validate integer parameters
 const validateIntParams = (req, res, next) => {
@@ -36,8 +37,6 @@ const cache = {
   }
 };
 
-
-
 // Error handling wrapper
 const asyncHandler = (fn) => (req, res, next) => {
   Promise.resolve(fn(req, res, next)).catch(error => {
@@ -57,30 +56,6 @@ const asyncHandler = (fn) => (req, res, next) => {
   });
 };
 
-// Fixtures route
-router.get('/fixtures/:gameweek', 
-  validateIntParams,
-  asyncHandler(async (req, res) => {
-    const { gameweek } = req.params;
-    const [fixturesResponse, liveResponse] = await Promise.all([
-      axios.get(`https://fantasy.premierleague.com/api/fixtures/?event=${gameweek}`),
-      axios.get(`https://fantasy.premierleague.com/api/event/${gameweek}/live/`)
-    ]);
-    
-    const enrichedFixtures = fixturesResponse.data.map(fixture => ({
-      ...fixture,
-      homeTeamBonus: liveResponse.data.elements
-        .filter(el => el.team === fixture.team_h)
-        .reduce((sum, player) => sum + (player.stats.bonus || 0), 0),
-      awayTeamBonus: liveResponse.data.elements
-        .filter(el => el.team === fixture.team_a)
-        .reduce((sum, player) => sum + (player.stats.bonus || 0), 0)
-    }));
-
-    res.json(enrichedFixtures);
-  })
-);
-
 // Live league standings route
 router.get('/:leagueId/live/:gameweek', 
   validateIntParams,
@@ -89,57 +64,114 @@ router.get('/:leagueId/live/:gameweek',
     const limit = parseInt(req.query.limit) || 50;
     const offset = parseInt(req.query.offset) || 0;
     
-    const [standingsResponse, liveResponse, bootstrapData] = await Promise.all([
-      axios.get(`https://fantasy.premierleague.com/api/leagues-classic/${leagueId}/standings/`),
-      axios.get(`https://fantasy.premierleague.com/api/event/${gameweek}/live/`),
-      loadBootstrapData()
-    ]);
+    try {
+      // Check cache first
+      const cacheKey = `league_${leagueId}_gw_${gameweek}_${offset}_${limit}`;
+      if (cache && cache.data && cache.data[cacheKey] && 
+          (Date.now() - cache.timestamps[cacheKey]) < cache.ttl.league_live) {
+        console.log(`Returning cached league data for ${leagueId}, GW ${gameweek}`);
+        return res.json(cache.data[cacheKey]);
+      }
+      
+      // Use FPLAPIProxyService for more reliable data fetching
+      const [standingsData, liveData, bootstrapData] = await Promise.all([
+        FPLAPIProxyService.fetchLeagueStandings(leagueId),
+        FPLAPIProxyService.fetchLiveData(gameweek),
+        loadBootstrapData()
+      ]);
 
-    const liveData = liveResponse.data.elements;
-    const totalEntries = standingsResponse.data.standings.results.length;
-    const paginatedResults = standingsResponse.data.standings.results.slice(offset, offset + limit);
-    
-    const standings = await Promise.all(
-      paginatedResults.map(async (entry) => {
-        const [picksResponse, transfersResponse] = await Promise.all([
-          axios.get(`https://fantasy.premierleague.com/api/entry/${entry.entry}/event/${gameweek}/picks/`),
-          axios.get(`https://fantasy.premierleague.com/api/entry/${entry.entry}/transfers/`)
-        ]);
+      const liveElements = liveData.elements;
+      const totalEntries = standingsData.standings.results.length;
+      const paginatedResults = standingsData.standings.results.slice(offset, offset + limit);
+      
+      // Fetch picks for each manager in the league
+      const standings = await Promise.all(
+        paginatedResults.map(async (entry) => {
+          try {
+            // Use FPLAPIProxyService for picks data
+            const picksData = await FPLAPIProxyService.fetchPicksData(entry.entry, gameweek)
+              .catch(err => {
+                console.warn(`Failed to fetch picks for entry ${entry.entry}: ${err.message}`);
+                return { picks: [] };
+              });
+              
+            // Use FPLAPIProxyService for transfers data
+            const transfersData = await FPLAPIProxyService.fetchTransfersData(entry.entry)
+              .catch(err => {
+                console.warn(`Failed to fetch transfers for entry ${entry.entry}: ${err.message}`);
+                return [];
+              });
 
-        const picks = picksResponse.data.picks;
-        const transfersForGW = transfersResponse.data.filter(t => t.event === parseInt(gameweek)).length;
-        const freeTransfers = 1;
-        const extraTransfers = Math.max(0, transfersForGW - freeTransfers);
-        const transferPenalty = extraTransfers * -4;
+            const picks = picksData.picks || [];
+            const transfersForGW = transfersData.filter(t => t.event === parseInt(gameweek)).length;
+            const freeTransfers = 1;
+            const extraTransfers = Math.max(0, transfersForGW - freeTransfers);
+            const transferPenalty = extraTransfers * -4;
 
-        const livePoints = picks.reduce((total, pick) => {
-          const liveStats = liveData.find(el => el.id === pick.element);
-          const points = liveStats ? liveStats.stats.total_points * pick.multiplier : 0;
-          return total + points;
-        }, 0) + transferPenalty;
+            // Calculate live points
+            const livePoints = picks.reduce((total, pick) => {
+              const liveStats = liveElements.find(el => el.id === pick.element);
+              const points = liveStats ? liveStats.stats.total_points * pick.multiplier : 0;
+              return total + points;
+            }, 0) + transferPenalty;
 
-        return {
-          rank: entry.rank,
-          managerName: entry.player_name,
-          teamName: entry.entry_name,
-          totalPoints: entry.total,
-          livePoints: livePoints,
-          transferPenalty: transferPenalty,
-          entryId: entry.entry
-        };
-      })
-    );
-    
-    res.json({
-      leagueName: standingsResponse.data.league.name,
-      pagination: {
-        total: totalEntries,
-        limit: limit,
-        offset: offset,
-        hasMore: offset + limit < totalEntries
-      },
-      standings: standings
-    });
+            return {
+              rank: entry.rank,
+              managerName: entry.player_name,
+              teamName: entry.entry_name,
+              totalPoints: entry.total,
+              livePoints: livePoints,
+              transferPenalty: transferPenalty,
+              entryId: entry.entry,
+              activeChip: picksData.active_chip
+            };
+          } catch (err) {
+            console.error(`Error processing entry ${entry.entry}:`, err.message);
+            return {
+              rank: entry.rank,
+              managerName: entry.player_name,
+              teamName: entry.entry_name,
+              totalPoints: entry.total,
+              livePoints: 0,
+              transferPenalty: 0,
+              entryId: entry.entry,
+              error: 'Failed to calculate live points'
+            };
+          }
+        })
+      );
+      
+      const result = {
+        leagueName: standingsData.league.name,
+        pagination: {
+          total: totalEntries,
+          limit: limit,
+          offset: offset,
+          hasMore: offset + limit < totalEntries
+        },
+        standings: standings
+      };
+      
+      // Cache the result
+      if (cache && cache.data) {
+        cache.data[cacheKey] = result;
+        cache.timestamps[cacheKey] = Date.now();
+      }
+
+      res.json(result);
+    } catch (error) {
+      console.error(`Error in league standings for ${leagueId}, GW ${gameweek}:`, {
+        error: error.message, 
+        stack: error.stack
+      });
+      
+      res.status(500).json({ 
+        error: 'Failed to retrieve league standings', 
+        message: process.env.NODE_ENV === 'production' 
+          ? 'An unexpected error occurred' 
+          : error.message 
+      });
+    }
   })
 );
 
@@ -151,7 +183,8 @@ router.post('/cache/clear',
     if (key) {
       Object.keys(cache.data)
         .filter(cacheKey => cacheKey.includes(key))
-        .forEach(cacheKey => {delete cache.data[cacheKey];
+        .forEach(cacheKey => {
+          delete cache.data[cacheKey];
           delete cache.timestamps[cacheKey];
         });
     } else {
