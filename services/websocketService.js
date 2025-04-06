@@ -20,7 +20,7 @@ const MAX_RECONNECT_ATTEMPTS = 5;
 const INITIAL_RECONNECT_DELAY = 1000;
 const MAX_RECONNECT_DELAY = 60000; // 1 minute max
 const CONNECTION_TIMEOUT = 10000; // 10 seconds
-const CLIENT_LIMIT_PER_IP = 2; // Limit connections per IP
+const CLIENT_LIMIT_PER_IP = 5; // Limit connections per IP
 
 // Track connections to avoid duplicates
 const connectionTracker = new Map(); // IP -> count
@@ -32,6 +32,40 @@ const DEFAULT_LIVE_DATA = {
     { id: 1, stats: { total_points: 0, bonus: 0, in_dream_team: false } }
   ]
 };
+
+
+
+// Add after other constants, before the functions
+const rateLimiter = {
+  attempts: new Map(), // IP -> timestamps[]
+  isLimited: function(ip) {
+    if (!this.attempts.has(ip)) {
+      this.attempts.set(ip, []);
+      return false;
+    }
+    
+    // Clean up old attempts (older than 60 seconds)
+    const now = Date.now();
+    const attempts = this.attempts.get(ip).filter(
+      timestamp => now - timestamp < 60000
+    );
+    this.attempts.set(ip, attempts);
+    
+    // If too many recent attempts, apply rate limiting
+    return attempts.length >= 10; // Max 10 connection attempts per minute
+  },
+  recordAttempt: function(ip) {
+    const attempts = this.attempts.get(ip) || [];
+    attempts.push(Date.now());
+    this.attempts.set(ip, attempts);
+  }
+};
+
+// Add server-wide limit constant
+const MAX_TOTAL_CONNECTIONS = 100; // Adjust as needed
+
+
+
 
 // Initialize global variables
 global.liveDataCache = global.liveDataCache || {};
@@ -415,7 +449,25 @@ const setupWebSocket = (wss) => {
   wss.on('connection', (ws, req) => {
     // Extract client IP
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-    
+
+    // Check total connections
+  if (wss.clients.size >= MAX_TOTAL_CONNECTIONS) {
+    logger.warn(`Global connection limit reached (${wss.clients.size}), rejecting new connection`);
+    ws.close(1013, 'Server at capacity, please try again later');
+    return;
+  }
+   
+  
+// Apply rate limiting
+if (rateLimiter.isLimited(ip)) {
+  logger.warn(`Rate limit exceeded for IP: ${ip}, rejecting connection`);
+  ws.close(1013, 'Too many connection attempts, please wait');
+  return;
+}
+
+// Record this connection attempt
+rateLimiter.recordAttempt(ip);
+
     // Limit connections per IP
     if (connectionTracker.get(ip) >= CLIENT_LIMIT_PER_IP) {
       logger.warn(`Connection limit reached for IP: ${ip}`);
@@ -467,16 +519,25 @@ const setupWebSocket = (wss) => {
     });
 
     ws.on('close', () => {
-      // Clean up connection tracking
-      connectionTracker.set(ip, connectionTracker.get(ip) - 1);
-      if (connectionTracker.get(ip) <= 0) {
-        connectionTracker.delete(ip);
-      }
+      // Clean up connection tracking more carefully
+    const currentCount = connectionTracker.get(ip) || 0;
+    if (currentCount <= 1) {
+      connectionTracker.delete(ip);
+    } else {
+      connectionTracker.set(ip, currentCount - 1);
+    }
       
       subscriptions.delete(ws);
-      logger.info('Client disconnected', { ip });
-    });
+    // Clean up reconnect timer if it exists
+    if (reconnectTimers.has(ws)) {
+      clearTimeout(reconnectTimers.get(ws));
+      reconnectTimers.delete(ws);
+    }
     
+    logger.info('Client disconnected', { ip, remaining: connectionTracker.get(ip) || 0 });
+
+  });
+
     // Handle errors on this connection
     ws.on('error', (err) => {
       logger.error('WebSocket error', { error: err.message, ip });

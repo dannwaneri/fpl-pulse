@@ -7,9 +7,14 @@ let globalWsClients = 0;
 let globalWsConnectionState = 'disconnected';
 let globalReconnectTimer = null;
 
+
+
 const MAX_RECONNECT_ATTEMPTS = 5;
-const INITIAL_RECONNECT_DELAY = 1000;
-const MAX_RECONNECT_DELAY = 30000;
+const INITIAL_RECONNECT_DELAY = 2000; // Increased from 1000ms
+const MAX_RECONNECT_DELAY = 60000;
+let lastConnectionAttempt = 0;
+const CONNECTION_THROTTLE = 5000; // 5 seconds between connection attempts
+
 
 // Client-side caching
 const clientCache = {
@@ -415,6 +420,16 @@ const useFplData = () => {
   }, [state.data, fetchLeague]);
 
   const connectWebSocket = useCallback(() => {
+    // Add throttling at the start of the function
+  const now = Date.now();
+  if (now - lastConnectionAttempt < CONNECTION_THROTTLE) {
+    console.log(`Throttling connection attempt, last attempt was ${(now - lastConnectionAttempt)/1000}s ago`);
+    return;
+  }
+
+  lastConnectionAttempt = now;
+
+
     if (globalWsConnectionState === 'connecting') return;
 
     if (globalWs?.readyState === WebSocket.OPEN) {
@@ -516,7 +531,10 @@ const useFplData = () => {
         console.log('WebSocket closed:', event);
         globalWsConnectionState = 'disconnected';
         setWsConnectionState('disconnected');
-        if (globalWs.pingInterval) clearInterval(globalWs.pingInterval);
+        if (globalWs && globalWs.pingInterval) {
+          clearInterval(globalWs.pingInterval);
+          globalWs.pingInterval = null;
+        }
 
         if (event.code !== 1000 && event.code !== 1001 && globalWsClients > 0) {
           const delay = Math.min(
