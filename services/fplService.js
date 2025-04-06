@@ -7,7 +7,7 @@ const managersData = require('../utils/data/managers.json');
 // In-memory cache with longer duration
 const memoryCache = {};
 const CACHE_DURATION_SHORT = 900000; // 15 minutes for frequently updated data
-const CACHE_DURATION_LONG = 21600000; // 6 hours for stable data
+const CACHE_DURATION_LONG = 43200000; // 6 hours for stable data
 
 // Enhanced utility function for delay with jitter
 const delay = (ms) => new Promise(resolve => {
@@ -58,9 +58,9 @@ const getBootstrapData = async (forceRefresh = false) => {
   try {
     // Check memory cache first
     if (cachedBootstrapData && !forceRefresh && 
-        (Date.now() - bootstrapTimestamp) < CACHE_DURATION_LONG) {
-      return cachedBootstrapData;
-    }
+      (Date.now() - bootstrapTimestamp) < 43200000) {
+    return cachedBootstrapData;
+  }
 
     // Fetch data
     const rawData = await loadBootstrapData(forceRefresh);
@@ -147,6 +147,26 @@ const getManagerData = async (id) => {
   }
 };
 
+// Helper function to get current gameweek
+const getCurrentGameweek = () => {
+  // Try to get from cache first
+  if (global.currentGameweek) {
+    return global.currentGameweek;
+  }
+  
+  // Use cached bootstrap data if available
+  if (cachedBootstrapData && cachedBootstrapData.events) {
+    const currentEvent = cachedBootstrapData.events.find(e => e.is_current);
+    if (currentEvent) {
+      global.currentGameweek = currentEvent.id;
+      return currentEvent.id;
+    }
+  }
+  
+  // Default to a reasonable gameweek number
+  return 30; // Adjust based on the current time of year
+};
+
 const estimateLiveRank = async (totalPoints, seasonPoints, managerRank, picks = [], assistantManagerPoints = 0) => {
   try {
     // Ensure numeric inputs with safe defaults
@@ -157,12 +177,28 @@ const estimateLiveRank = async (totalPoints, seasonPoints, managerRank, picks = 
 
     console.log('estimateLiveRank inputs:', { totalPoints, seasonPoints, managerRank, adjustedTotalPoints });
 
-    const bootstrapData = await getBootstrapData();
+    // Use FPLAPIProxyService to get required data
+    const rankData = await FPLAPIProxyService.fetchRankData(
+      'estimate', // Use 'estimate' as placeholder for managerId
+      getCurrentGameweek(),
+      totalPoints,
+      seasonPoints,
+      managerRank
+    );
+    
+    // If we got a direct result from the worker, return it
+    if (rankData.simulatedRank) {
+      return rankData.simulatedRank;
+    }
+    
+    // Otherwise, calculate the rank using fetched data
+    const bootstrapData = rankData.bootstrapData || await getBootstrapData();
+    const top10kStats = rankData.top10kStats || memoryCache[`gw${getCurrentGameweek() - 1}`]?.data || await getTop10kStats(getCurrentGameweek() - 1);
+    
     const currentGW = bootstrapData.events.find(e => e.is_current)?.id || 1;
     const pastGW = Math.max(1, currentGW - 1);
 
-    const top10kStats = memoryCache[`gw${pastGW}`]?.data || await getTop10kStats(pastGW);
-    const avgPointsTop10k = Number(top10kStats.top10k?.averagePoints) || 80;
+    const avgPointsTop10k = Number(top10kStats?.top10k?.averagePoints) || 80;
     const avgPointsOverall = Number(bootstrapData.events.find(e => e.id === pastGW)?.average_entry_score) || 50;
     
     const totalManagers = 10000000;
@@ -171,19 +207,15 @@ const estimateLiveRank = async (totalPoints, seasonPoints, managerRank, picks = 
     // If picks are provided, enhance calculation with EO and bonus points
     if (picks && picks.length > 0) {
       // Use cached top100k EO for rank ~100k
-      const nearRankEO = top10kStats.top100k?.eoBreakdown || {};
+      const nearRankEO = top10kStats?.top100k?.eoBreakdown || {};
       const updatedPicks = picks.map(pick => ({
         ...pick,
         eo: nearRankEO[pick.playerId]?.eo || pick.eo
       }));
 
-      // Live data from WebSocket or API
-      const liveData = global.liveDataCache?.[currentGW] || 
-                      (await fetchWithRetry(`https://fantasy.premierleague.com/api/event/${currentGW}/live/`)).data.elements;
-      
+      // Calculate bonus points if not already included
       const bonusPoints = updatedPicks.reduce((sum, pick) => {
-        const liveStats = liveData.find(el => el.id === pick.playerId)?.stats || {};
-        return sum + (liveStats.bonus || 0) * (pick.multiplier || 1);
+        return sum + (pick.bonus || 0) * (pick.multiplier || 1);
       }, 0);
 
       const livePoints = adjustedTotalPoints + bonusPoints;
@@ -284,32 +316,40 @@ const estimateLiveRank = async (totalPoints, seasonPoints, managerRank, picks = 
   }
 };
 
-
 const simulateRank = async (id, gameweek, additionalPoints) => {
   try {
     const picksData = await getPicksData(id, gameweek);
     const currentPoints = picksData.totalLivePoints || 0;
     const assistantManagerPoints = picksData.assistantManagerPoints || 0;
     
+    // Get manager data to pass to estimateLiveRank
+    const managerData = await getManagerData(id);
+    const seasonPoints = managerData.totalPoints || 0;
+    const managerRank = managerData.rank || 5000000;
+    
     // Include assistant manager points in the simulation if active
     const simulatedPoints = currentPoints + additionalPoints;
     
-    // Pass assistantManagerPoints to estimateLiveRank - it will only be used if the chip is active
+    // Pass all required parameters to estimateLiveRank
     const simulatedRank = await estimateLiveRank(
       simulatedPoints, 
-      gameweek, 
-      undefined, // Use default manager rank if not provided
+      seasonPoints,
+      managerRank,
       picksData.picks || [],
       assistantManagerPoints
     );
     
-    return { simulatedPoints, simulatedRank };
+    return { 
+      simulatedPoints, 
+      simulatedRank,
+      currentRank: picksData.liveRank || managerRank,
+      additionalPoints 
+    };
   } catch (err) {
     console.error(`Error in simulateRank for ID ${id}, GW ${gameweek}:`, err.message);
     throw err;
   }
 };
-
 
 const identifyDifferentials = (picks, top10kStats, managerRank) => {
   const nearRankEOThreshold = managerRank < 10000 ? 5 : 10; // Stricter for top ranks

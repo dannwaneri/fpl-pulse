@@ -1,0 +1,344 @@
+// Modify in fplRoutes.js
+
+// Enhanced caching strategy with longer TTLs
+const cache = {
+  data: {},
+  timestamps: {},
+  ttl: {
+    bootstrap: 3600000 * 4,    // 4 hours (was 1 hour)
+    live: 180000,              // 3 minutes (was 1 minute)
+    entry: 600000,             // 10 minutes (was 5 minutes)
+    players: 3600000,          // 1 hour (was 30 minutes)
+    fixtures: 1800000,         // 30 minutes
+    league: 600000             // 10 minutes
+  },
+  set: function(key, data) {
+    this.data[key] = data;
+    this.timestamps[key] = Date.now();
+  },
+  get: function(key, defaultTtl = this.ttl.live) {
+    if (!this.data[key]) return null;
+    
+    const age = Date.now() - this.timestamps[key];
+    const ttl = this.ttl[key.split('_')[0]] || defaultTtl;
+    
+    if (age < ttl) {
+      return this.data[key];
+    }
+    
+    return null;
+  },
+  clear: function(pattern = null) {
+    if (pattern) {
+      Object.keys(this.data)
+        .filter(key => key.includes(pattern))
+        .forEach(key => {
+          delete this.data[key];
+          delete this.timestamps[key];
+        });
+    } else {
+      this.data = {};
+      this.timestamps = {};
+    }
+  }
+};
+
+// Improve error handling wrapper with better logging
+const asyncHandler = (fn) => (req, res, next) => {
+  Promise.resolve(fn(req, res, next)).catch(error => {
+    console.error(`FPL API Error: ${req.path}`, {
+      error: error.message,
+      stack: error.stack,
+      params: req.params,
+      query: req.query,
+      ip: req.ip,
+      timestamp: new Date().toISOString()
+    });
+    
+    // Add request count metrics
+    const requestKey = `${req.ip}:requests`;
+    if (!cache.data[requestKey]) {
+      cache.data[requestKey] = 0;
+    }
+    cache.data[requestKey]++;
+    
+    // If a client is making too many requests that fail, track it
+    if (cache.data[requestKey] > 100) {
+      console.warn(`Client ${req.ip} has made ${cache.data[requestKey]} requests`);
+    }
+    
+    res.status(500).json({ 
+      error: 'Internal Server Error', 
+      message: process.env.NODE_ENV === 'production' 
+        ? 'An unexpected error occurred' 
+        : error.message,
+      cacheRefresh: Date.now() // Help client coordinate cache busting
+    });
+  });
+};
+
+// Improve the live data route with better caching
+router.get('/live/:gameweek', 
+  validateIntParams,
+  asyncHandler(async (req, res) => {
+    const { gameweek } = req.params;
+    
+    // Add cache-control headers
+    res.set('Cache-Control', 'public, max-age=180'); // 3 minutes browser cache
+    
+    // Check cache first if available
+    const cacheKey = `live_${gameweek}`;
+    const cachedData = cache.get(cacheKey);
+    
+    if (cachedData) {
+      console.log(`Returning cached live data for gameweek ${gameweek}, age: ${(Date.now() - cache.timestamps[cacheKey])/1000}s`);
+      
+      // Add cache age headers
+      res.set('X-Cache-Age', (Date.now() - cache.timestamps[cacheKey])/1000);
+      res.set('X-Cache-Source', 'memory');
+      
+      return res.json(cachedData);
+    }
+    
+    try {
+      let liveData;
+      
+      try {
+        // Attempt to fetch from FPL API
+        liveData = await FPLAPIProxyService.fetchLiveData(gameweek);
+        
+        // Add diagnostic headers
+        res.set('X-FPL-Proxy-Status', 'success');
+        res.set('X-FPL-Success-Rate', FPLAPIProxyService.getErrorTrackerStatus().successRate);
+        
+        // Format and store response
+        const responseData = {
+          elements: liveData.elements,
+          metadata: {
+            source: 'primary',
+            retrievedAt: new Date().toISOString(),
+            gameweek
+          }
+        };
+        
+        // Update cache
+        cache.set(cacheKey, responseData);
+        
+        return res.json(responseData);
+      } catch (apiError) {
+        console.error(`FPL API fetch failed for gameweek ${gameweek}`, {
+          errorMessage: apiError.message,
+          statusCode: apiError.response?.status
+        });
+        
+        // Add diagnostic headers for failed request
+        res.set('X-FPL-Proxy-Status', 'failed');
+        
+        // Check if we have older cache that's still usable in an emergency
+        if (cache.data[cacheKey]) {
+          const cacheAge = Date.now() - cache.timestamps[cacheKey];
+          
+          // Use stale cache if it's less than 30 minutes old
+          if (cacheAge < 1800000) {
+            console.log(`Using stale cache for gameweek ${gameweek}, age: ${cacheAge/1000}s`);
+            
+            res.set('X-Cache-Age', cacheAge/1000);
+            res.set('X-Cache-Source', 'stale-memory');
+            
+            return res.json({
+              ...cache.data[cacheKey],
+              metadata: {
+                ...cache.data[cacheKey].metadata,
+                source: 'stale-cache',
+                staleAge: cacheAge/1000
+              }
+            });
+          }
+        }
+        
+        // Fallback to cached data from database
+        try {
+          const cachedBootstrap = await Bootstrap.findOne({ _id: 'bootstrap:latest' }).exec();
+          
+          const cachedLiveData = cachedBootstrap?.data?.events?.[gameweek - 1]?.live_data;
+          
+          if (cachedLiveData && Array.isArray(cachedLiveData)) {
+            console.log(`Using cached bootstrap data for gameweek ${gameweek}`);
+            
+            const responseData = {
+              elements: cachedLiveData,
+              metadata: {
+                source: 'database-cache',
+                retrievedAt: new Date().toISOString(),
+                gameweek
+              }
+            };
+            
+            // Store this in memory cache too
+            cache.set(cacheKey, responseData);
+            
+            return res.json(responseData);
+          }
+        } catch (cacheError) {
+          console.error('Cache retrieval error', {
+            message: cacheError.message,
+            stack: cacheError.stack
+          });
+        }
+        
+        // Final fallback to default data
+        console.warn(`Using default fallback data for gameweek ${gameweek}`);
+        
+        const defaultResponse = {
+          elements: DEFAULT_LIVE_DATA.elements,
+          metadata: {
+            source: 'default',
+            retrievedAt: new Date().toISOString(),
+            gameweek
+          }
+        };
+        
+        // Update cache
+        cache.set(cacheKey, defaultResponse);
+        
+        return res.json(defaultResponse);
+      }
+    } catch (error) {
+      // Catch-all error handler
+      console.error('Comprehensive error in live data route', {
+        gameweek,
+        errorMessage: error.message,
+        stack: error.stack
+      });
+      
+      res.status(500).json({
+        error: 'Failed to retrieve live data',
+        details: {
+          message: error.message
+        }
+      });
+    }
+  })
+);
+
+// Modify picks data route with better caching
+router.get('/:id/event/:gameweek/picks', 
+  validateIntParams,
+  asyncHandler(async (req, res) => {
+    const { id, gameweek } = req.params;
+    
+    // Add cache-control headers
+    res.set('Cache-Control', 'public, max-age=120'); // 2 minutes browser cache
+    
+    // Check cache first
+    const cacheKey = `picks_${id}_${gameweek}`;
+    const cachedData = cache.get(cacheKey);
+    
+    if (cachedData) {
+      console.log(`Returning cached picks data for ID ${id}, GW ${gameweek}`);
+      
+      // Add cache age headers
+      res.set('X-Cache-Age', (Date.now() - cache.timestamps[cacheKey])/1000);
+      res.set('X-Cache-Source', 'memory');
+      
+      return res.json(cachedData);
+    }
+    
+    try {
+      const picksData = await getPicksData(id, gameweek);
+      
+      // Update cache
+      cache.set(cacheKey, picksData);
+      
+      res.json(picksData);
+    } catch (error) {
+      console.error(`Error fetching picks for ID ${id}, GW ${gameweek}:`, {
+        error: error.message
+      });
+      
+      // Check for stale cache as fallback
+      if (cache.data[cacheKey]) {
+        const cacheAge = Date.now() - cache.timestamps[cacheKey];
+        
+        // Use stale cache if less than 30 minutes old
+        if (cacheAge < 1800000) {
+          console.log(`Using stale picks cache, age: ${cacheAge/1000}s`);
+          
+          res.set('X-Cache-Age', cacheAge/1000);
+          res.set('X-Cache-Source', 'stale-memory');
+          
+          return res.json({
+            ...cache.data[cacheKey],
+            _meta: {
+              source: 'stale-cache',
+              staleAge: cacheAge/1000
+            }
+          });
+        }
+      }
+      
+      // No viable cache, return error
+      res.status(500).json({
+        error: 'Failed to fetch picks data',
+        message: error.message
+      });
+    }
+  })
+);
+
+// Modify manager data endpoint with better caching
+router.get('/entry/:id', 
+  validateIntParams,
+  asyncHandler(async (req, res) => {
+    try {
+      const managerId = req.params.id;
+      
+      // Check cache first
+      const cacheKey = `entry_${managerId}`;
+      const cachedData = cache.get(cacheKey);
+      
+      if (cachedData) {
+        console.log(`Returning cached manager data for ID ${managerId}`);
+        
+        // Add cache age headers
+        res.set('X-Cache-Age', (Date.now() - cache.timestamps[cacheKey])/1000);
+        res.set('X-Cache-Source', 'memory');
+        
+        return res.json(cachedData);
+      }
+      
+      const managerData = await getManagerData(managerId);
+      
+      // Additional error handling if getManagerData returns an error or empty response
+      if (!managerData || !managerData.name) {
+        return res.status(404).json({ 
+          error: 'Manager not found', 
+          message: 'Unable to retrieve manager information' 
+        });
+      }
+      
+      // Update cache
+      cache.set(cacheKey, managerData);
+      
+      // Log the current gameweek for debugging
+      console.log(`Returning manager data for ID ${managerId} with currentGameweek: ${managerData.currentGameweek}`);
+      res.json(managerData);
+    } catch (error) {
+      console.error('Manager Retrieval Error:', {
+        managerId: req.params.id,
+        errorMessage: error.message
+      });
+
+      res.status(500).json({ 
+        error: 'Failed to Retrieve Manager Information', 
+        message: process.env.NODE_ENV === 'production' 
+          ? 'An unexpected error occurred' 
+          : error.message 
+      });
+    }
+  })
+);
+
+// Similarly update other routes with the improved caching strategy
+
+module.exports = router;

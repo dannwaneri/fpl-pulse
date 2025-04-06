@@ -238,6 +238,59 @@ const assistantManagerSchema = new mongoose.Schema({
 // Add compound index for fplId + gameweek
 assistantManagerSchema.index({ fplId: 1, gameweek: 1 }, { unique: true });
 
+// API Metrics Schema - For tracking API reliability and performance
+const apiMetricsSchema = new mongoose.Schema({
+  endpoint: { 
+    type: String, 
+    required: true,
+    index: true 
+  },
+  source: { 
+    type: String, 
+    enum: ['worker', 'direct', 'cache', 'fallback'],
+    required: true,
+    index: true
+  },
+  successRate: { 
+    type: Number,
+    min: 0,
+    max: 100 
+  },
+  responseTime: { 
+    type: Number,
+    min: 0
+  },
+  requestCount: {
+    type: Number,
+    default: 1,
+    min: 1
+  },
+  successCount: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  failureCount: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  lastError: {
+    message: String,
+    status: Number,
+    timestamp: Date
+  },
+  timestamp: { 
+    type: Date, 
+    default: Date.now, 
+    required: true,
+    expires: 604800 // Auto-expire after 7 days
+  }
+});
+
+// Create compound index for faster querying
+apiMetricsSchema.index({ endpoint: 1, source: 1, timestamp: -1 });
+
 // Models
 const Bootstrap = mongoose.model('Bootstrap', bootstrapSchema);
 const TopStats = mongoose.model('TopStats', topStatsSchema);
@@ -245,6 +298,7 @@ const PicksData = mongoose.model('PicksData', picksDataSchema);
 const PlannerData = mongoose.model('PlannerData', plannerDataSchema);
 const Transfer = mongoose.model('Transfer', transferSchema);
 const AssistantManager = mongoose.model('AssistantManager', assistantManagerSchema);
+const ApiMetrics = mongoose.model('ApiMetrics', apiMetricsSchema);
 
 module.exports = { 
   db, 
@@ -254,5 +308,6 @@ module.exports = {
   Transfer, 
   Bootstrap,
   AssistantManager,
-  reconnectWithBackoff // Export for use in bootstrapService.js
+  ApiMetrics,
+  reconnectWithBackoff
 };
