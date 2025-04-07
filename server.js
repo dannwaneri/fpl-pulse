@@ -14,11 +14,17 @@ const logger = require('./utils/logger');
 const helmet = require('helmet');
 const compression = require('compression');
 const rateLimit = require('express-rate-limit');
+const { workerCoordination } = require('./services/workerCoordination');
 
 // Configuration constants
 const PORT = process.env.PORT || 5000;
 const NODE_ENV = process.env.NODE_ENV || 'development';
-const numCPUs = os.cpus().length;
+// Limit worker count to reduce Cloudflare request overload
+const numCPUs = NODE_ENV === 'production' 
+  ? Math.min(2, os.cpus().length) // Limit to 2 in production
+  : 1; // Use 1 in development
+
+logger.info(`Configuring server with ${numCPUs} worker(s)`);
 
 // Create rate limiter
 const apiLimiter = rateLimit({
@@ -30,7 +36,7 @@ const apiLimiter = rateLimit({
 });
 
 // Enhanced cluster management
-const setupWorker = () => {
+const setupWorker = async () => {
   const app = express();
 
   // Security middleware with updated CSP to allow connecting to FPL API
@@ -73,36 +79,36 @@ const setupWorker = () => {
       await reconnectWithBackoff();
       logger.info('MongoDB connection established');
 
-      // Pre-populate cache with DEFAULT_BOOTSTRAP_DATA if no valid cache exists
-      const existingCache = await Bootstrap.findOne({ _id: 'bootstrap:latest' }).exec();
-      if (!existingCache || !existingCache.data || (!existingCache.data.elements?.length && !existingCache.data.teams?.length)) {
-        await Bootstrap.updateOne(
-          { _id: 'bootstrap:latest' },
-          { $set: { data: DEFAULT_BOOTSTRAP_DATA, timestamp: Date.now() } },
-          { upsert: true }
-        );
-        logger.info('Pre-populated MongoDB cache with default bootstrap data');
-      } else {
-        logger.info('Cache already populated', {
-          elementCount: existingCache.data.elements?.length || 0,
-          teamCount: existingCache.data.teams?.length || 0
-        });
-      }
-
-      // Force an initial bootstrap data refresh in the background
-      loadBootstrapData().catch(err => 
-        logger.warn('Background bootstrap refresh failed, will continue with cached data', { 
-          error: err.message 
-        })
-      );
+      // Use workerCoordination for bootstrap initialization
+      const bootstrapData = await workerCoordination.initializeBootstrapData(loadBootstrapData);
+      logger.info('Bootstrap data initialized via coordination');
       
+      return bootstrapData;
     } catch (error) {
       logger.error('Failed to initialize app', { message: error.message });
       logger.warn('Continuing with fallback mechanisms');
+      
+      // Pre-populate cache with DEFAULT_BOOTSTRAP_DATA if no valid cache exists
+      try {
+        const existingCache = await Bootstrap.findOne({ _id: 'bootstrap:latest' }).exec();
+        if (!existingCache || !existingCache.data || (!existingCache.data.elements?.length && !existingCache.data.teams?.length)) {
+          await Bootstrap.updateOne(
+            { _id: 'bootstrap:latest' },
+            { $set: { data: DEFAULT_BOOTSTRAP_DATA, timestamp: Date.now() } },
+            { upsert: true }
+          );
+          logger.info('Pre-populated MongoDB cache with default bootstrap data');
+        } else {
+          logger.info('Cache already populated', {
+            elementCount: existingCache.data.elements?.length || 0,
+            teamCount: existingCache.data.teams?.length || 0
+          });
+        }
+      } catch (cacheError) {
+        logger.error('Failed to initialize cache', { message: cacheError.message });
+      }
     }
   };
-
-  // Setup the new FPL proxy service - ADD THIS LINE
 
   // API Routes
   app.use('/api/fpl', fplRoutes);
@@ -133,47 +139,44 @@ const setupWorker = () => {
   }
 
   // Initialize the application
-  initializeApp().then(() => {
-    // Start server after initialization
-    const server = app.listen(PORT, () => {
-      logger.info(`Worker ${process.pid} running on http://localhost:${PORT}`);
-      logger.info(`Environment: ${NODE_ENV}`);
+  await initializeApp();
+  
+  // Start server after initialization
+  const server = app.listen(PORT, () => {
+    logger.info(`Worker ${process.pid} running on http://localhost:${PORT}`);
+    logger.info(`Environment: ${NODE_ENV}`);
+  });
+
+  // WebSocket setup
+  const wss = new WebSocket.Server({ server });
+  setupWebSocket(wss);
+
+  // Graceful shutdown
+  const gracefulShutdown = (signal) => {
+    logger.info(`Received ${signal}. Shutting down gracefully...`);
+    server.close(() => {
+      logger.info('HTTP server closed.');
+      // Close database connections, etc.
+      process.exit(0);
     });
 
-    // WebSocket setup
-    const wss = new WebSocket.Server({ server });
-    setupWebSocket(wss);
+    // Force close server after 10 seconds
+    setTimeout(() => {
+      logger.error('Could not close connections in time, forcefully shutting down');
+      process.exit(1);
+    }, 10000);
+  };
 
-    // Graceful shutdown
-    const gracefulShutdown = (signal) => {
-      logger.info(`Received ${signal}. Shutting down gracefully...`);
-      server.close(() => {
-        logger.info('HTTP server closed.');
-        // Close database connections, etc.
-        process.exit(0);
-      });
-
-      // Force close server after 10 seconds
-      setTimeout(() => {
-        logger.error('Could not close connections in time, forcefully shutting down');
-        process.exit(1);
-      }, 10000);
-    };
-
-    // Handle termination signals
-    process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-    process.on('SIGINT', () => gracefulShutdown('SIGINT'));
-  }).catch(error => {
-    logger.error('Failed to start server', { message: error.message });
-    process.exit(1);
-  });
+  // Handle termination signals
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 };
 
 // Cluster management
 if (cluster.isPrimary && NODE_ENV === 'production') {
   logger.info(`Master ${process.pid} is running`);
 
-  // Fork workers for each CPU core
+  // Fork workers (limited number)
   for (let i = 0; i < numCPUs; i++) {
     cluster.fork();
   }
@@ -185,7 +188,10 @@ if (cluster.isPrimary && NODE_ENV === 'production') {
   });
 } else {
   // Worker process or development mode
-  setupWorker();
+  setupWorker().catch(error => {
+    logger.error('Failed to start worker', { message: error.message });
+    process.exit(1);
+  });
 }
 
 module.exports = { setupWorker };
