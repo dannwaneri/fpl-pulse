@@ -291,6 +291,18 @@ const apiMetricsSchema = new mongoose.Schema({
 // Create compound index for faster querying
 apiMetricsSchema.index({ endpoint: 1, source: 1, timestamp: -1 });
 
+// Cache Schema - For general-purpose caching with TTL
+const cacheSchema = new mongoose.Schema({
+  _id: String,
+  data: mongoose.Schema.Types.Mixed,
+  expires: { type: Date, index: { expires: 0 } }, // TTL index
+  metadata: {
+    owner: String,
+    createdAt: { type: Date, default: Date.now },
+    accessCount: { type: Number, default: 0 }
+  }
+}, { timestamps: true });
+
 // Models
 const Bootstrap = mongoose.model('Bootstrap', bootstrapSchema);
 const TopStats = mongoose.model('TopStats', topStatsSchema);
@@ -299,6 +311,7 @@ const PlannerData = mongoose.model('PlannerData', plannerDataSchema);
 const Transfer = mongoose.model('Transfer', transferSchema);
 const AssistantManager = mongoose.model('AssistantManager', assistantManagerSchema);
 const ApiMetrics = mongoose.model('ApiMetrics', apiMetricsSchema);
+const Cache = mongoose.model('Cache', cacheSchema);
 
 module.exports = { 
   db, 
@@ -309,5 +322,6 @@ module.exports = {
   Bootstrap,
   AssistantManager,
   ApiMetrics,
+  Cache,
   reconnectWithBackoff
 };
