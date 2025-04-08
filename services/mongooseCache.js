@@ -9,6 +9,7 @@ const cacheSchema = new mongoose.Schema({
   expires: { type: Date, required: true, index: { expires: 0 } }, // TTL index
   metadata: {
     source: String,
+    owner: String,
     createdAt: { type: Date, default: Date.now },
     accessCount: { type: Number, default: 0 }
   }
@@ -65,6 +66,7 @@ const mongooseCache = {
           expires,
           metadata: {
             source: options.source || 'app',
+            owner: options.owner,
             createdAt: new Date(),
             accessCount: 0
           }
@@ -175,16 +177,10 @@ const mongooseCache = {
       const lockId = `lock:${lockKey}`;
       const expires = new Date(Date.now() + ttlSeconds * 1000);
       
-      // Try to insert a new lock document
-      const result = await Cache.findOneAndUpdate(
-        { 
+      // First try a direct insert
+      try {
+        const newLock = new Cache({
           _id: lockId,
-          $or: [
-            { expires: { $lt: new Date() } }, // Lock expired
-            { 'metadata.owner': owner }       // Already owned by us
-          ]
-        },
-        {
           data: { acquired: new Date() },
           expires,
           metadata: {
@@ -192,14 +188,51 @@ const mongooseCache = {
             createdAt: new Date(),
             accessCount: 0
           }
-        },
-        { upsert: true, new: true }
-      );
-      
-      // If the lock belongs to us, we acquired it
-      const acquired = result.metadata.owner === owner;
-      logger.info(`Lock ${lockId} ${acquired ? 'acquired' : 'not acquired'} by ${owner}`);
-      return acquired;
+        });
+        
+        await newLock.save();
+        logger.info(`Lock ${lockId} created and acquired by ${owner}`);
+        return true;
+      } catch (insertErr) {
+        // If insert fails due to duplicate key, the lock already exists
+        if (insertErr.code === 11000) {
+          // Try to update the lock if it's expired
+          try {
+            const result = await Cache.findOneAndUpdate(
+              { 
+                _id: lockId,
+                expires: { $lt: new Date() } // Only update if expired
+              },
+              {
+                data: { acquired: new Date() },
+                expires,
+                metadata: {
+                  owner,
+                  createdAt: new Date(),
+                  accessCount: 0
+                }
+              },
+              { new: true }
+            );
+            
+            // If we got a result back, we acquired the lock
+            if (result) {
+              logger.info(`Expired lock ${lockId} acquired by ${owner}`);
+              return true;
+            } else {
+              // Lock exists and is not expired
+              logger.info(`Lock ${lockId} already held by another worker`);
+              return false;
+            }
+          } catch (updateErr) {
+            logger.error(`Error updating expired lock ${lockId}`, { error: updateErr.message });
+            return false;
+          }
+        } else {
+          // Some other error occurred during insert
+          throw insertErr;
+        }
+      }
     } catch (err) {
       logger.error(`Error acquiring lock ${lockKey}`, { error: err.message });
       return false;

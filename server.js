@@ -14,7 +14,7 @@ const logger = require('./utils/logger');
 const helmet = require('helmet');
 const compression = require('compression');
 const rateLimit = require('express-rate-limit');
-const { workerCoordination } = require('./services/workerCoordination');
+const workerCoordination = require('./services/workerCoordination');
 
 // Configuration constants
 const PORT = process.env.PORT || 5000;
